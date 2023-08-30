@@ -1,4 +1,4 @@
-# addon-warema-wms
+# Bridge wms2mqtt
 
 This Bridge allows to control Warema WMS equipment.
 In order to use this bridge you'll need a Warema WMS stick (https://www.warema.com/en/control-systems/radio-systems/supplementary-components/)
