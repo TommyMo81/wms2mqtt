@@ -1,13 +1,13 @@
 {
-  "name": "addon-warema-wms",
+  "name": "wms2mqtt",
   "scripts": {
     "start": "node warema-bridge/srv/index.js",
-    "build": "docker buildx build --tag santam/wms-mqtt:latest --platform linux/amd64,linux/arm64,linux/arm/v7 -f standalone.Dockerfile ."
+    "build": "docker buildx build --tag wms2mqtt:latest --platform linux/amd64,linux/arm64,linux/arm/v7 -f Dockerfile ."
   },
   "dependencies": {
-    "@serialport/parser-delimiter": "^10.0.0",
+    "@serialport/parser-delimiter": "^12.0.0",
     "mqtt": "^4.2.6",
-    "serialport": "^10.0.0",
+    "serialport": "^12.0.0",
     "winston": "^3.8.2"
   },
   "devDependencies": {
