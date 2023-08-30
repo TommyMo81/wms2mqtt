@@ -3,7 +3,6 @@
 This Bridge allows to control Warema WMS equipment.
 In order to use this bridge you'll need a Warema WMS stick (https://www.warema.com/en/control-systems/radio-systems/supplementary-components/)
 
-### Installation
 ### Configuration
 
 MQTT_SERVER
@@ -16,10 +15,10 @@ MQTT_PASSWORD
 : Password for MQTT server authentication
 
 IGNORED_DEVICES
-: A comma-separated list of device ids to exclude from the results of network scanning. Any excluded device will not show up in Home assistant, and the integration will ignore any status or position updates coming from it.
+: A comma-separated list of device ids to exclude from the results of network scanning. Any excluded device will not show up in MQTT, and the integration will ignore any status or position updates coming from it.
 
 FORCE_DEVICES
-: A comma-separated list of devices to monitor for status and position updates. The devices included in this list will be added to Home assistant even
+: A comma-separated list of devices to monitor for status and position updates. The devices included in this list will be added to MQTT even
 if the automatic scanning process can't detect them. Their online status will be updated whenever they are in range. You can specify a particular device type for the forced devices
 using the format `DEVICE_ID:DEVICE_TYPE` for each device in the list. In case no type is specified, type 25 is assumed (radio-controlled motor). For a list of supported device types check https://www.npmjs.com/package/warema-wms-venetian-blinds.
 
@@ -32,7 +31,7 @@ This applies only to covers being opened or closed, for the duration of the oper
 
 WMS_CHANNEL, WMS_KEY, WMS_PAN_ID
 : Use these parameters to configure the WMS network your devices are connected to. In order to discover the parameters, start the addon with a `PAN_ID` equal to
-`FFFFF`, and follow the instructions described at the WMS network parameter discovery section ([here](#wms-discovery)).
+`FFFF`, and follow the instructions described at the WMS network parameter discovery section ([here](#wms-discovery)).
 
 WMS_SERIAL_PORT
 : Default value: `/dev/ttyUSB0`. Device path for the WMS Usb Key.
@@ -45,7 +44,7 @@ In order to control WMS devices, the addon must be configured with the network p
 a brief process. You can initiate this process by starting the add-on with default parameters, or run it standalone with
 a command similar to the following:
 ```shell
-docker run -it -e WMS_PAN_ID=FFFF -e WMS_SERIAL_PORT=/dev/ttyUSB0 santam/wms-mqtt 
+docker run -it -e WMS_PAN_ID=FFFF -e WMS_SERIAL_PORT=/dev/ttyUSB0 wms2mqtt 
 ```
 
 When the `panId` configuration env parameter is set to `"FFFF"`, the stick will enter discovery mode and print out
