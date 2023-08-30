@@ -334,7 +334,7 @@ function privateFinishScannedDevices(stickObj, options) {
 
             stickObj.vnBlinds = [];
             stickObj.scannedDevArray.forEach(function (device, index) {
-                if ((device.type === '20') || (device.type === '21') || (device.type === '24') || (device.type === '25')) {
+                if ((device.type === '20') || (device.type === '21') || (device.type === '24') || (device.type === '25') || (device.type === '28') || (device.type === '2A')) {
                     stickObj.vnBlindAdd(device.snr, device.typeStr.trim() + " " + device.snr + " (" + device.snrHex + ")");
                     log.info(stickObj.name + "   Added " + device.typeStr.trim() + " " + device.snr + " (" + device.snrHex + ")");
                 }
@@ -862,7 +862,7 @@ class Stick {
 
     // ~ ~ method ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
     vnBlindSetPosition(id, position, angle) {
-        log.silly("vnBlindSetPosition( (" + (typeof id) + ") \"" + id + "\", " + position + ", " + angle + " )");
+        log.info("vnBlindSetPosition( (" + (typeof id) + ") \"" + id + "\", " + position + ", " + angle + " )");
         var stickObj = this;
         var blind = stickObj.vnBlindGet(id);
 

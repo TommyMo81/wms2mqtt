@@ -1,5 +1,5 @@
 const log = require('../logger.js')
-const wmsAngle = 75;
+const wmsAngle = 133;
 
 var gMsgId = 0;
 
@@ -318,33 +318,16 @@ function decodeStickCmd(rcv) {
                 params.panId = payload.substr(0, 4);
                 params.unknown = payload.substr(6); //optional
                 switch (params.deviceType) {
-                    case '02':
-                        params.deviceTypeStr = 'Stick/software   ';
-                        break;
-                    case '06':
-                        params.deviceTypeStr = 'Weather station  ';
-                        break;
-                    case '07':
-                        params.deviceTypeStr = 'Remote control(+)';
-                        break;
-                    case '09':
-                        params.deviceTypeStr = 'Web control pro  ';
-                        break;
-                    case '20':
-                        params.deviceTypeStr = 'Actuator UP      ';
-                        break;
-                    case '21':
-                        params.deviceTypeStr = 'Plug receiver    ';
-                        break;
-                    case '24':
-                        params.deviceTypeStr = 'Smart socket     ';
-                        break;
-                    case '25':
-                        params.deviceTypeStr = 'Radio motor      ';
-                        break;
-                    case '63':
-                        params.deviceTypeStr = 'Web control      ';
-                        break;
+					case '02': params.deviceTypeStr = 'Stick/software   '; break;
+					case '06': params.deviceTypeStr = 'Weather station  '; break;
+					case '07': params.deviceTypeStr = 'Remote control(+)'; break;
+					case '09': params.deviceTypeStr = 'Webcontrol pro   '; break;
+					case '20': params.deviceTypeStr = 'Actuator UP      '; break;
+					case '21': params.deviceTypeStr = 'Plug receiver    '; break;
+					case '28': params.deviceTypeStr = 'LED              '; break;
+					case '25': params.deviceTypeStr = 'Radio motor      '; break;
+					case '2A': params.deviceTypeStr = 'LAMAXA L50/60    '; break;
+					case '63': params.deviceTypeStr = 'Weather st. pro  '; break;
                 }
                 break;
             case '7050':
@@ -354,6 +337,7 @@ function decodeStickCmd(rcv) {
                 msgType = 'blindMoveToPos';
                 params.unknown = payload.substr(0, 2);
                 params.position = wmsPosHexToPercent(payload.substr(2, 2));
+				log.info('HexToPercent: ' + (payload.substr(4, 2)) + '!!!!!!!!!!!!');
                 params.angle = wmsAngleHexToPercent(payload.substr(4, 2));
                 params.valance_1 = payload.substr(6, 2);
                 params.valance_2 = payload.substr(8, 2);
@@ -378,12 +362,14 @@ function decodeStickCmd(rcv) {
 
 //--------------------------------------------------------------------------------------------------
 function wmsAngleHexToPercent(angHex) {
-    return Math.round((parseInt(angHex, 16) - 127) / wmsAngle * 100);
+    //return Math.round((parseInt(angHex, 16) - 127) / wmsAngle * 100);
+	return Math.round((parseInt(angHex, 16) - 84) / wmsAngle * 100)
 }
 
 //--------------------------------------------------------------------------------------------------
 function wmsAnglePercentToHex(angPercent) {
-    return ('0' + (Math.min(Math.max(Math.round(angPercent / 100 * wmsAngle), -75), 75) + 127).toString(16)).substr(-2).toUpperCase();
+    //return ('0' + (Math.min(Math.max(Math.round(angPercent / 100 * wmsAngle), -100), 100) + 127).toString(16)).substr(-2).toUpperCase();
+	return ('0' + (Math.round(angPercent / 100 * wmsAngle) + 84).toString(16)).substr(-2).toUpperCase()
 }
 
 //--------------------------------------------------------------------------------------------------

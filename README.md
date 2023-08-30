@@ -1,13 +1,13 @@
 # addon-warema-wms
 
-This Home Assistant addon allows to control Warema WMS equipment.
-In order to use this addon you'll need a Warema WMS stick (https://www.warema.com/en/control-systems/radio-systems/supplementary-components/)
+This Bridge allows to control Warema WMS equipment.
+In order to use this bridge you'll need a Warema WMS stick (https://www.warema.com/en/control-systems/radio-systems/supplementary-components/)
 
 ### Installation
 ### Configuration
 
 MQTT_SERVER
-: MQTT server url (ie: http://localhost:1883)
+: MQTT server url (ie: mqtt://localhost:1883)
 
 MQTT_USER
 : Username for MQTT server authentication
