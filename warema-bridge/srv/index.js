@@ -44,7 +44,6 @@ function registerDevice(element) {
     var payload
     switch (element.type) {
 		case "63":
-		case 63:
             model = 'Weather station pro'
             payload = {
                 ...base_payload,
@@ -95,13 +94,13 @@ function registerDevice(element) {
             log.info('No need to add to stick, weather updates are broadcasted. ' + element.snr + ' with type: ' + element.type) 
 
             return;
-        case 7:
+        case "07":
             // WMS Remote pro
             return;
-        case '09':
+        case "09":
             // WMS WebControl Pro - while part of the network, we have no business to do with it.
             return;
-        case '20':
+        case "20":
             model = 'Plug receiver'
             payload = {
                 ...base_payload,
@@ -123,7 +122,7 @@ function registerDevice(element) {
                 tilt_max: 100,
             }
             break;
-        case '21':
+        case "21":
             model = 'Actuator UP'
             payload = {
                 ...base_payload,
@@ -145,7 +144,7 @@ function registerDevice(element) {
             }
 
             break;
-        case '24':
+        case "24":
             // TODO: Smart socket
             model = 'Smart socket';
             payload = {
@@ -159,7 +158,7 @@ function registerDevice(element) {
             }
 
             break;
-        case '25':
+        case "25":
             model = 'Vertical awning';
             payload = {
                 ...base_payload,
@@ -174,7 +173,7 @@ function registerDevice(element) {
                 set_position_topic: 'warema/' + element.snr + '/set_position',
             }
 			break;
-		case '28':
+		case "28":
             model = 'LED';
             payload = {
                 ...base_payload,
@@ -190,7 +189,7 @@ function registerDevice(element) {
                 set_position_topic: 'warema/' + element.snr + '/set_position',
 			}
 			break;
-		case '2A':
+		case "2A":
             model = 'Slat roof';
             payload = {
                 ...base_payload,
@@ -245,7 +244,7 @@ function callback(err, msg) {
                     forceDevices.forEach(deviceString => {
                         const [snr, type] = deviceString.split(':');
 
-                        registerDevice({snr: snr, type: type || 25})
+                        registerDevice({snr: snr, type: type || "25"})
                     })
                 } else {
                     msg.payload.devices.forEach(element => registerDevice(element))
@@ -256,7 +255,7 @@ function callback(err, msg) {
                 log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2))
 
                 if (!devices[msg.payload.weather.snr]) {
-                    registerDevice({snr: msg.payload.weather.snr, type: 63});
+                    registerDevice({snr: msg.payload.weather.snr, type: "63"});
                 }
 
                 client.publish('warema/' + msg.payload.weather.snr + '/illuminance/state', msg.payload.weather.lumen.toString(), {retain: true})
@@ -384,8 +383,10 @@ client.on('message', function (topic, message) {
             }
             break;
         case 'set_position':
-			log.debug('Setting ' + device + ' to ' + message + '%, angle ' + devices[device].angle);
-            stickUsb.vnBlindSetPosition(device, parseInt(message), parseInt(devices[device]['angle']))
+			//log.debug('Setting ' + device + ' to ' + message + '%, angle ' + devices[device].angle);
+            //stickUsb.vnBlindSetPosition(device, parseInt(message), parseInt(devices[device]['angle']))
+			log.debug('Setting ' + device + ' to ' + message);
+            stickUsb.vnBlindSetPosition(device, parseInt(message))
             break;
         case 'set_tilt':
             log.debug('Setting ' + device + ' to ' + message + '°, position ' + devices[device].position);
