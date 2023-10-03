@@ -15,7 +15,7 @@ MQTT_PASSWORD
 : Password for MQTT server authentication
 
 MQTT_VERSION
-: MQTT Version for server authentication
+: MQTT Version for server authentication, the default is 4 (v3.1.1) and can be modified to 3 (v3.1) and 5 (v5.0)
 
 IGNORED_DEVICES
 : A comma-separated list of device ids to exclude from the results of network scanning. Any excluded device will not show up in MQTT, and the integration will ignore any status or position updates coming from it.
