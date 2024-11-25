@@ -1,4 +1,4 @@
-FROM node:18-alpine as builder
+FROM node:20-alpine as builder
 
 ## Install build toolchain, install node deps and compile native add-ons
 RUN apk add --no-cache python3 make g++ linux-headers
