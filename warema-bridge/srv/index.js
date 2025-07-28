@@ -20,6 +20,7 @@ const settingsPar = {
 };
 
 const devices = [];
+const weatherCache = new Map(); // Cache for weather data deduplication
 
 function registerDevice(element) {
     log.debug('Registering ' + element.snr + ' with type: ' + element.type)
@@ -258,10 +259,38 @@ function callback(err, msg) {
                     registerDevice({snr: msg.payload.weather.snr, type: "63"});
                 }
 
-                client.publish('warema/' + msg.payload.weather.snr + '/illuminance/state', msg.payload.weather.lumen.toString(), {retain: true})
-                client.publish('warema/' + msg.payload.weather.snr + '/temperature/state', msg.payload.weather.temp.toString(), {retain: true})
-                client.publish('warema/' + msg.payload.weather.snr + '/wind/state', msg.payload.weather.wind.toString(), {retain: true})
-                client.publish('warema/' + msg.payload.weather.snr + '/rain/state', msg.payload.weather.rain ? 'ON' : 'OFF', {retain: true})
+                // Deduplication for weather data
+                const weatherData = msg.payload.weather;
+                const weatherKey = weatherData.snr;
+                const currentTime = Date.now();
+                const weatherHash = `${weatherData.temp}_${weatherData.wind}_${weatherData.lumen}_${weatherData.rain}`;
+                
+                const cachedWeather = weatherCache.get(weatherKey);
+                const minTimeDiff = 5000; // At least 5 seconds between identical messages
+                
+                // Only send if:
+                // 1. No cached data available OR
+                // 2. Values have changed OR  
+                // 3. Enough time has passed
+                if (!cachedWeather || 
+                    cachedWeather.hash !== weatherHash || 
+                    (currentTime - cachedWeather.timestamp) > minTimeDiff) {
+                    
+                    log.debug('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
+                    
+                    client.publish('warema/' + msg.payload.weather.snr + '/illuminance/state', msg.payload.weather.lumen.toString(), {retain: true})
+                    client.publish('warema/' + msg.payload.weather.snr + '/temperature/state', msg.payload.weather.temp.toString(), {retain: true})
+                    client.publish('warema/' + msg.payload.weather.snr + '/wind/state', msg.payload.weather.wind.toString(), {retain: true})
+                    client.publish('warema/' + msg.payload.weather.snr + '/rain/state', msg.payload.weather.rain ? 'ON' : 'OFF', {retain: true})
+                    
+                    // Update cache
+                    weatherCache.set(weatherKey, {
+                        hash: weatherHash,
+                        timestamp: currentTime
+                    });
+                } else {
+                    log.debug('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
+                }
 
                 break;
             case 'wms-vb-blind-position-update':
