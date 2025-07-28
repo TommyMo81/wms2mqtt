@@ -21,6 +21,33 @@ const settingsPar = {
 
 const devices = [];
 const weatherCache = new Map(); // Cache for weather data deduplication
+const rawMessageCache = new Map(); // Cache for raw hardware message deduplication
+
+// Function to check if raw hardware message is a duplicate
+function isDuplicateRawMessage(stickCmd, snr) {
+    const currentTime = Date.now();
+    const messageKey = `${snr}_${stickCmd}`;
+    const cachedMessage = rawMessageCache.get(messageKey);
+    const minTimeDiff = 1000; // At least 1 second between identical raw messages
+    
+    if (cachedMessage && (currentTime - cachedMessage.timestamp) < minTimeDiff) {
+        return true; // This is a duplicate message within the time window
+    }
+    
+    // Update cache with current message
+    rawMessageCache.set(messageKey, {
+        timestamp: currentTime
+    });
+    
+    // Clean up old cache entries (older than 10 seconds)
+    for (const [key, value] of rawMessageCache.entries()) {
+        if ((currentTime - value.timestamp) > 10000) {
+            rawMessageCache.delete(key);
+        }
+    }
+    
+    return false;
+}
 
 // Weather polling function to handle weather broadcasts via API
 function pollWeatherData() {
@@ -315,6 +342,13 @@ function callback(err, msg) {
                 log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2))
                 log.info('Processing weather broadcast for device: ' + msg.payload.weather.snr);
 
+                // Check for duplicate raw hardware message first
+                const stickCmd = msg.payload.stickCmd || '';
+                if (isDuplicateRawMessage(stickCmd, msg.payload.weather.snr)) {
+                    log.debug('Skipping duplicate raw hardware message for device: ' + msg.payload.weather.snr);
+                    break;
+                }
+
                 if (!devices[msg.payload.weather.snr]) {
                     registerDevice({snr: msg.payload.weather.snr, type: "63"});
                 }
@@ -354,7 +388,7 @@ function callback(err, msg) {
                         timestamp: currentTime
                     });
                 } else {
-                    log.info('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
+                    log.debug('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
                 }
 
                 break;
