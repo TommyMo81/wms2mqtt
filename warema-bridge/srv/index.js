@@ -22,6 +22,58 @@ const settingsPar = {
 const devices = [];
 const weatherCache = new Map(); // Cache for weather data deduplication
 
+// Weather polling function to handle weather broadcasts via API
+function pollWeatherData() {
+    try {
+        const weatherData = stickUsb.getLastWeatherBroadcast();
+        
+        if (weatherData && weatherData.snr) {
+            const weatherKey = weatherData.snr;
+            const currentTime = Date.now();
+            const weatherHash = `${weatherData.temp}_${weatherData.wind}_${weatherData.lumen}_${weatherData.rain}`;
+            
+            const cachedWeather = weatherCache.get(weatherKey);
+            const minTimeDiff = 5000; // At least 5 seconds between identical messages
+            
+            // Only send if:
+            // 1. No cached data available OR
+            // 2. Values have changed OR  
+            // 3. Enough time has passed
+            if (!cachedWeather || 
+                cachedWeather.hash !== weatherHash || 
+                (currentTime - cachedWeather.timestamp) > minTimeDiff) {
+                
+                log.info('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ') via polling');
+                
+                // Register device if not already registered
+                if (!devices[weatherData.snr]) {
+                    registerDevice({snr: weatherData.snr, type: "63"});
+                }
+                
+                // Check if MQTT client is available and connected
+                if (typeof client !== 'undefined' && client.connected) {
+                    client.publish('warema/' + weatherData.snr + '/illuminance/state', weatherData.lumen.toString(), {retain: true})
+                    client.publish('warema/' + weatherData.snr + '/temperature/state', weatherData.temp.toString(), {retain: true})
+                    client.publish('warema/' + weatherData.snr + '/wind/state', weatherData.wind.toString(), {retain: true})
+                    client.publish('warema/' + weatherData.snr + '/rain/state', weatherData.rain ? 'ON' : 'OFF', {retain: true})
+                } else {
+                    log.warn('MQTT client not connected, skipping weather data publish for ' + weatherKey);
+                }
+                
+                // Update cache
+                weatherCache.set(weatherKey, {
+                    hash: weatherHash,
+                    timestamp: currentTime
+                });
+            } else {
+                log.debug('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ') via polling');
+            }
+        }
+    } catch (error) {
+        log.error('Error polling weather data: ' + error.toString());
+    }
+}
+
 function registerDevice(element) {
     log.debug('Registering ' + element.snr + ' with type: ' + element.type)
     var availability_topic = 'warema/' + element.snr + '/availability'
@@ -380,6 +432,10 @@ client.on('connect', function () {
         'warema/+/set_position',
         'warema/+/set_tilt',
     ]);
+    
+    // Start weather polling with configurable interval
+    setInterval(pollWeatherData, parseInt(pollingInterval));
+    log.info('Started weather data polling every ' + pollingInterval + ' ms');
 })
 
 client.on('error', function (error) {
