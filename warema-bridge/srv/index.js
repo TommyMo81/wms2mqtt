@@ -89,7 +89,10 @@ function registerDevice(element) {
                 object_id: element.snr + '_rain',
             }
             
-            client.publish(availability_topic, 'online', {retain: true})
+            // Only publish if MQTT client is available
+            if (typeof client !== 'undefined' && client.connected) {
+                client.publish(availability_topic, 'online', {retain: true})
+            }
 
             devices[element.snr] = {};
             log.info('No need to add to stick, weather updates are broadcasted. ' + element.snr + ' with type: ' + element.type) 
@@ -219,7 +222,10 @@ function registerDevice(element) {
 
         devices[element.snr] = {};
 
-        client.publish(availability_topic, 'online', {retain: true})
+        // Only publish if MQTT client is available
+        if (typeof client !== 'undefined' && client.connected) {
+            client.publish(availability_topic, 'online', {retain: true})
+        }
     }
 }
 
@@ -254,6 +260,7 @@ function callback(err, msg) {
                 break;
             case 'wms-vb-rcv-weather-broadcast':
                 log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2))
+                log.info('Processing weather broadcast for device: ' + msg.payload.weather.snr);
 
                 if (!devices[msg.payload.weather.snr]) {
                     registerDevice({snr: msg.payload.weather.snr, type: "63"});
@@ -276,12 +283,17 @@ function callback(err, msg) {
                     cachedWeather.hash !== weatherHash || 
                     (currentTime - cachedWeather.timestamp) > minTimeDiff) {
                     
-                    log.debug('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
+                    log.info('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
                     
-                    client.publish('warema/' + msg.payload.weather.snr + '/illuminance/state', msg.payload.weather.lumen.toString(), {retain: true})
-                    client.publish('warema/' + msg.payload.weather.snr + '/temperature/state', msg.payload.weather.temp.toString(), {retain: true})
-                    client.publish('warema/' + msg.payload.weather.snr + '/wind/state', msg.payload.weather.wind.toString(), {retain: true})
-                    client.publish('warema/' + msg.payload.weather.snr + '/rain/state', msg.payload.weather.rain ? 'ON' : 'OFF', {retain: true})
+                    // Check if MQTT client is available and connected
+                    if (typeof client !== 'undefined' && client.connected) {
+                        client.publish('warema/' + msg.payload.weather.snr + '/illuminance/state', msg.payload.weather.lumen.toString(), {retain: true})
+                        client.publish('warema/' + msg.payload.weather.snr + '/temperature/state', msg.payload.weather.temp.toString(), {retain: true})
+                        client.publish('warema/' + msg.payload.weather.snr + '/wind/state', msg.payload.weather.wind.toString(), {retain: true})
+                        client.publish('warema/' + msg.payload.weather.snr + '/rain/state', msg.payload.weather.rain ? 'ON' : 'OFF', {retain: true})
+                    } else {
+                        log.warn('MQTT client not connected, skipping weather data publish for ' + weatherKey);
+                    }
                     
                     // Update cache
                     weatherCache.set(weatherKey, {
@@ -289,7 +301,7 @@ function callback(err, msg) {
                         timestamp: currentTime
                     });
                 } else {
-                    log.debug('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
+                    log.info('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
                 }
 
                 break;
