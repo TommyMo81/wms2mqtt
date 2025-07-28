@@ -234,6 +234,7 @@ function callback(err, msg) {
         log.error(err);
     }
     if (msg) {
+        log.info('Callback received message with topic: ' + msg.topic + ', payload keys: ' + Object.keys(msg.payload || {}));
         switch (msg.topic) {
             case 'wms-vb-init-completion':
                 log.info('Warema init completed')
