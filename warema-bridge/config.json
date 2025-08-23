@@ -8,7 +8,7 @@
   "url": "https://github.com/TommyMo81/addon-warema-wms",
   "boot": "auto",
   "hassio_api": true,
-  "image": "tommymo81/wms2mqtt:latest",
+  "image": "tommymo81/wms2mqtt",
   "options": {
     "wms_serial_port": null
   },
