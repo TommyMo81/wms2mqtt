@@ -29,7 +29,10 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v2
         with:
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
             tommymo81/wms2mqtt:latest
