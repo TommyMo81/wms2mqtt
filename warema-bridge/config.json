@@ -1,6 +1,6 @@
 {
   "name": "Warema Bridge by TommyMo81",
-  "version": "20250823",
+  "version": "dev",
   "slug": "warema-bridge",
   "description": "Control your Warema WMS system",
   "arch": ["aarch64", "amd64", "armv7", "i386"],
@@ -8,7 +8,7 @@
   "url": "https://github.com/TommyMo81/addon-warema-wms",
   "boot": "auto",
   "hassio_api": true,
-  "image": "tommymo81/wms2mqtt",
+  "image": "tommymo81/wms2mqtt:latest",
   "options": {
     "wms_serial_port": null
   },
