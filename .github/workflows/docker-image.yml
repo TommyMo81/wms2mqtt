@@ -32,8 +32,8 @@ jobs:
           context: .
           push: true
           tags: |
-            marcberg/wms2mqtt:latest
-            marcberg/wms2mqtt:${{ env.DATE }}
+            tommymo81/wms2mqtt:latest
+            tommymo81/wms2mqtt:${{ env.DATE }}
 
       - name: Logout Docker Hub
         run: docker logout
