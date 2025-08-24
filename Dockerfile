@@ -11,11 +11,7 @@ COPY package.json .
 # rebuild from sources to avoid issues with prebuilt binaries (https://github.com/serialport/node-serialport/issues/2438
 RUN npm ci --omit=dev && npm rebuild --build-from-source
 
-ARG BUILD_FROM=hassioaddons/base:edge
-# hadolint ignore=DL3006
-FROM ${BUILD_FROM} as app
-
-# FROM node:22-alpine as app
+FROM node:22-alpine as app
 
 ## Copy built node modules and binaries without including the toolchain
 COPY --from=builder app/node_modules ./node_modules
