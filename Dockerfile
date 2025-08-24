@@ -6,6 +6,7 @@ RUN apk add --no-cache npm
 
 # Copy root filesystem
 COPY warema-bridge/srv /srv
+COPY warema-bridge/etc/services.d/warema-bridge /srv
 
 WORKDIR /srv
 
@@ -14,4 +15,4 @@ RUN apk add --no-cache --virtual .build-deps python3 make g++ linux-headers \
     && apk del --no-cache --purge .build-deps \
     && rm -rf /root/.npm /root/.cache
 
-ENTRYPOINT ["node", "/srv/index.js"]
+ENTRYPOINT ["node", "/srv/run"]
