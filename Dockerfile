@@ -19,4 +19,4 @@ COPY --from=builder app/node_modules ./node_modules
 # Copy root filesystem
 COPY warema-bridge/ /
 
-CMD ["node", "index.js"]
+CMD ["node", "srv/index.js"]
