@@ -13,12 +13,12 @@
     "wms_serial_port": null
   },
   "schema": {
-    "wms_key": "str?",
-    "wms_pan_id": "str?",
-    "wms_channel": "int?",
-    "wms_serial_port": "device(subsystem=tty)",
-    "ignored_devices": "str?",
-    "force_devices": "str?"
+    "WMS_KEY": "str?",
+    "WMS_PAN_ID": "str?",
+    "WMS_CHANNEL": "int?",
+    "WMS_SERIAL_PORT": "device(subsystem=tty)",
+    "IGNORED_DEVICES": "str?",
+    "FORCE_DEVICES": "str?"
   },
   "services": [
     "mqtt:need"
