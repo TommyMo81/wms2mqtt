@@ -19,6 +19,6 @@ COPY --from=builder app/node_modules ./node_modules
 # Copy root filesystem
 COPY warema-bridge .
 
-RUN chmod +x /warema-bridge/ect/init.d/warema-bridge/run
+RUN chmod +x /ect/init.d/warema-bridge/run
 
 CMD [ "warema-bridge/ect/init.d/warema-bridge/run" ]
