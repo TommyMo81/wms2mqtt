@@ -23,4 +23,4 @@ COPY warema-bridge/etc/services.d/warema-bridge/run.sh .
 RUN chmod a+x run.sh
 #RUN chmod a+x etc/services.d/warema-bridge/run
 
-CMD ["node", "index.js"]
+CMD ["run.sh"]
