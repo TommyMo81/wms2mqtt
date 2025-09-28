@@ -17,8 +17,11 @@ FROM node:22-alpine as app
 COPY --from=builder app/node_modules ./node_modules
 
 # Copy root filesystem
-COPY warema-bridge .
+COPY warema-bridge/srv .
+COPY warema-bridge/ect/services.d/warema-bridge .
 
-RUN chmod +x /app/ect/init.d/warema-bridge/run
+#RUN chmod a+x /run.sh
 
-CMD [ "/app/ect/init.d/warema-bridge/run" ]
+RUN chmod a+x /run
+
+CMD [ "/run" ]
