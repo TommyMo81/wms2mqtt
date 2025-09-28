@@ -23,4 +23,4 @@ COPY warema-bridge .
 
 RUN chmod a+x etc/services.d/warema-bridge/run
 
-CMD [ "/etc/services.d/warema-bridge/run" ]
+CMD [ "run" ]
