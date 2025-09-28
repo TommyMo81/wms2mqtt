@@ -20,7 +20,7 @@ COPY --from=builder app/node_modules ./node_modules
 COPY warema-bridge/srv .
 COPY warema-bridge/etc/services.d/warema-bridge .
 
-RUN chmod +x /run.sh
-RUN chmod +x /finish.sh
+RUN chmod +x ./run.sh
+RUN chmod +x ./finish.sh
 
 CMD [ "/run.sh" ]
