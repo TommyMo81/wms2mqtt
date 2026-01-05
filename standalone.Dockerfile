@@ -20,7 +20,7 @@ COPY warema-bridge/srv ./srv
 # =========================
 # Stage 2: Runtime (HA Base Image)
 # =========================
-FROM ghcr.io/hassio-addons/base-node:22 AS runtime
+FROM ghcr.io/hassio-addons/base:14.0.2
 
 WORKDIR /app
 
@@ -28,6 +28,6 @@ WORKDIR /app
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/srv ./srv
 
-COPY warema-bridge/etc/services.d /etc/services.d
-RUN chmod +x /etc/services.d/warema-bridge/run \
-    && chmod +x /etc/services.d/warema-bridge/finish
+COPY warema-bridge/etc/services.d/warema-bridge /etc/services.d
+RUN chmod +x /etc/services.d/run \
+    && chmod +x /etc/services.d/finish
