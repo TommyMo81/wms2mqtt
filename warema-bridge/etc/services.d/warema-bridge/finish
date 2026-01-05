@@ -3,7 +3,12 @@
 # Home Assistant Community Add-on: Warema Bridge
 # Take down the S6 supervision tree when the Warema bridge fails
 # ==============================================================================
-if -n { s6-test $# -ne 0 }
-if -n { s6-test ${1} -eq 256 }
+bashio::log.info "Stopping the Warema bridge..."
 
+# NodeJS wird automatisch SIGTERM erhalten, s6 sorgt für sauberen Stop
+# Hier kannst du optional Cleanup-Aufgaben ausführen, z.B. temporäre Dateien löschen
+
+# s6 Overlay Stop
 s6-svscanctl -t /var/run/s6/services
+
+bashio::log.info "Warema bridge stopped"
