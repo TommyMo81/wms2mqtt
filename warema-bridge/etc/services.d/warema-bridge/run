@@ -38,4 +38,5 @@ else
 fi
 
 # Run the Warema WMS bridge
-exec node /srv/index.js
+cd /app/srv
+exec node index.js
