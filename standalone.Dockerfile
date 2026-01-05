@@ -1,26 +1,29 @@
 FROM node:22-alpine as builder
 
+WORKDIR /app
+
 ## Install build toolchain, install node deps and compile native add-ons
 RUN apk add --no-cache python3 make g++ linux-headers
 
-WORKDIR app
-
-COPY package-lock.json .
-COPY package.json .
+COPY package-lock.json ./
+COPY package.json ./
 
 # rebuild from sources to avoid issues with prebuilt binaries (https://github.com/serialport/node-serialport/issues/2438
 RUN npm ci --omit=dev && npm rebuild --build-from-source
 
-FROM node:22-alpine as app
+# Copy root filesystem
+COPY warema-bridge/srv ./srv
+
+FROM ghcr.io/hassio-addons/base:14.0.2
+
+RUN apk add --no-cache nodejs npm
+
+WORKDIR /app
 
 ## Copy built node modules and binaries without including the toolchain
-COPY --from=builder app/node_modules ./node_modules
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/srv ./srv
 
-# Copy root filesystem
-COPY warema-bridge/srv .
-COPY warema-bridge/etc/services.d/warema-bridge/run.sh .
-
-RUN chmod a+x run.sh
-#RUN chmod a+x etc/services.d/warema-bridge/run
-
-CMD ["run.sh"]
+COPY warema-bridge/etc/services.d /etc/services.d
+RUN chmod +x /etc/services.d/warema-bridge/run \
+    && chmod +x /etc/services.d/warema-bridge/finish
