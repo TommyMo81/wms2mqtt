@@ -29,5 +29,5 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/srv ./srv
 
 COPY warema-bridge/etc/services.d/warema-bridge /etc/services.d
-RUN chmod +x /etc/services.d/run \
-    && chmod +x /etc/services.d/finish
+RUN chmod +x /etc/services.d/warema-bridge/run \
+    && chmod +x /etc/services.d/warema-bridge/finish
