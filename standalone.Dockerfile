@@ -22,7 +22,7 @@ COPY warema-bridge/srv ./srv
 # =========================
 FROM ghcr.io/hassio-addons/base:14.0.2
 
-RUN apk add --no-cache nodejs.npm
+RUN apk add --no-cache nodejs npm
 
 WORKDIR /app
 
