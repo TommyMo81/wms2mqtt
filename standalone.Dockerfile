@@ -20,7 +20,7 @@ COPY warema-bridge/srv ./srv
 # =========================
 # Stage 2: Runtime (HA Base Image)
 # =========================
-FROM ghcr.io/hassio-addons/base:14.0.2
+FROM ghcr.io/hassio-addons/base-node:22 AS runtime
 
 WORKDIR /app
 
