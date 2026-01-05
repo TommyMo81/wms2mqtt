@@ -6,9 +6,3 @@
 bashio::log.info "Stopping the Warema bridge..."
 
 # NodeJS wird automatisch SIGTERM erhalten, s6 sorgt für sauberen Stop
-# Hier kannst du optional Cleanup-Aufgaben ausführen, z.B. temporäre Dateien löschen
-
-# s6 Overlay Stop
-s6-svscanctl -t /var/run/s6/services
-
-bashio::log.info "Warema bridge stopped"
