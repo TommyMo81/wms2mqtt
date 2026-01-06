@@ -70,7 +70,7 @@ function pollWeatherData() {
                 cachedWeather.hash !== weatherHash || 
                 (currentTime - cachedWeather.timestamp) > minTimeDiff) {
                 
-                log.info('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ') via polling');
+                log.debug('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ') via polling');
                 
                 // Register device if not already registered
                 if (!devices[weatherData.snr]) {
@@ -347,7 +347,7 @@ function callback(err, msg) {
                 break;
             case 'wms-vb-rcv-weather-broadcast':
                 log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2))
-                log.info('Processing weather broadcast for device: ' + msg.payload.weather.snr);
+                log.debug('Processing weather broadcast for device: ' + msg.payload.weather.snr);
 
                 // Check for duplicate raw hardware message first
                 const stickCmd = msg.payload.stickCmd || '';
