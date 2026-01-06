@@ -102,7 +102,7 @@ function pollWeatherData() {
 }
 
 function registerDevice(element) {
-    log.debug('Registering ' + element.snr + ' with type: ' + element.type)
+    log.info('Registering ' + element.snr + ' with type: ' + element.type)
 	var topic = 'homeassistant/cover/' + element.snr + '/' + element.snr + '/config'																					
     var availability_topic = 'warema/' + element.snr + '/availability'
 
