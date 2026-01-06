@@ -377,7 +377,7 @@ function callback(err, msg) {
                     cachedWeather.hash !== weatherHash || 
                     (currentTime - cachedWeather.timestamp) > minTimeDiff) {
                     
-                    log.info('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
+                    log.debug('Publishing weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
                     
                     // Check if MQTT client is available and connected
                     if (typeof client !== 'undefined' && client.connected) {
