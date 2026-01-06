@@ -139,7 +139,7 @@ function registerDevice(element) {
                 state_topic: 'warema/' + element.snr + '/illuminance/state',
                 device_class: 'illuminance',
                 unique_id: element.snr + '_illuminance',
-                object_id: element.snr + '_illuminance',
+                default_entity_id: 'sensor.' + element.snr + '_illuminance',
                 unit_of_measurement: 'lx',
             };
 			client.publish('homeassistant/sensor/' + element.snr + '/illuminance/config', JSON.stringify(illuminance_payload), {retain: true})
@@ -149,7 +149,7 @@ function registerDevice(element) {
                 state_topic: 'warema/' + element.snr + '/temperature/state',
                 device_class: 'temperature',
                 unique_id: element.snr + '_temperature',
-                object_id: element.snr + '_temperature',
+                default_entity_id: 'sensor.' + element.snr + '_temperature',
                 unit_of_measurement: '°C',
             }
 			client.publish('homeassistant/sensor/' + element.snr + '/temperature/config', JSON.stringify(temperature_payload), {retain: true})
@@ -159,7 +159,7 @@ function registerDevice(element) {
                 state_topic: 'warema/' + element.snr + '/wind/state',
                 device_class: 'wind_speed',
                 unique_id: element.snr + '_wind',
-                object_id: element.snr + '_wind',
+                default_entity_id: 'sensor.' + element.snr + '_wind',
                 unit_of_measurement: 'm/s',
             }
 			client.publish('homeassistant/sensor/' + element.snr + '/wind/config', JSON.stringify(wind_payload), {retain: true})
@@ -169,7 +169,7 @@ function registerDevice(element) {
                 state_topic: 'warema/' + element.snr + '/rain/state',
                 device_class: 'moisture',
                 unique_id: element.snr + '_rain',
-                object_id: element.snr + '_rain',
+                default_entity_id: 'sensor.' + element.snr + '_rain',
             }
 			client.publish('homeassistant/binary_sensor/' + element.snr + '/rain/config', JSON.stringify(rain_payload), {retain: true})
             
