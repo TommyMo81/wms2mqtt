@@ -103,6 +103,7 @@ function pollWeatherData() {
 
 function registerDevice(element) {
     log.debug('Registering ' + element.snr + ' with type: ' + element.type)
+	var topic = 'homeassistant/cover/' + element.snr + '/' + element.snr + '/config'																					
     var availability_topic = 'warema/' + element.snr + '/availability'
 
     var base_payload = {
@@ -141,6 +142,7 @@ function registerDevice(element) {
                 object_id: element.snr + '_illuminance',
                 unit_of_measurement: 'lx',
             };
+			client.publish('homeassistant/sensor/' + element.snr + '/illuminance/config', JSON.stringify(illuminance_payload), {retain: true})
             
             const temperature_payload = {
                 ...payload,
@@ -150,6 +152,7 @@ function registerDevice(element) {
                 object_id: element.snr + '_temperature',
                 unit_of_measurement: '°C',
             }
+			client.publish('homeassistant/sensor/' + element.snr + '/temperature/config', JSON.stringify(temperature_payload), {retain: true})
             
             const wind_payload = {
                 ...payload,
@@ -159,6 +162,7 @@ function registerDevice(element) {
                 object_id: element.snr + '_wind',
                 unit_of_measurement: 'm/s',
             }
+			client.publish('homeassistant/sensor/' + element.snr + '/wind/config', JSON.stringify(wind_payload), {retain: true})
             
             const rain_payload = {
                 ...payload,
@@ -167,6 +171,7 @@ function registerDevice(element) {
                 unique_id: element.snr + '_rain',
                 object_id: element.snr + '_rain',
             }
+			client.publish('homeassistant/binary_sensor/' + element.snr + '/rain/config', JSON.stringify(rain_payload), {retain: true})
             
             // Only publish if MQTT client is available
             if (typeof client !== 'undefined' && client.connected) {
@@ -305,6 +310,8 @@ function registerDevice(element) {
         if (typeof client !== 'undefined' && client.connected) {
             client.publish(availability_topic, 'online', {retain: true})
         }
+		
+		client.publish(topic, JSON.stringify(payload), {retain: true})
     }
 }
 
@@ -313,7 +320,7 @@ function callback(err, msg) {
         log.error(err);
     }
     if (msg) {
-        log.info('Callback received message with topic: ' + msg.topic + ', payload keys: ' + Object.keys(msg.payload || {}));
+        log.debug('Callback received message with topic: ' + msg.topic + ', payload keys: ' + Object.keys(msg.payload || {}));
         switch (msg.topic) {
             case 'wms-vb-init-completion':
                 log.info('Warema init completed')
