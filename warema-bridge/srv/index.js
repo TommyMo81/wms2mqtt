@@ -318,7 +318,7 @@ function registerDevice(element) {
         state_topic: `warema/${element.snr}/light/state`,
         brightness_command_topic: `warema/${element.snr}/light/set_brightness`,
         brightness_state_topic: `warema/${element.snr}/light/brightness`,
-        brightness_scale: 255,
+        brightness_scale: 100,
         supported_color_modes: ["brightness"],
         color_mode: "brightness",
         payload_on: 'ON',
@@ -501,8 +501,8 @@ function callback(err, msg) {
   }
 }
 
-function updateLightState(snr, brightness255) {
-  const v = Math.max(0, Math.min(255, Number(brightness255)));
+function updateLightState(snr, brightness) {
+  const v = Math.max(0, Math.min(100, Number(brightness)));
 
   if (!devices[snr]) devices[snr] = {};
   devices[snr].type = "28";
@@ -640,7 +640,7 @@ client.on('message', function (topic, message) {
       const cmd = message.toUpperCase();
 
       if (cmd === 'ON') {
-        const target = dev.lastBrightness ?? 255;
+        const target = dev.lastBrightness ?? 100;
         stickUsb.vnBlindSetPosition(snr, target, 0);
         updateLightState(snr, target);
       }
@@ -652,7 +652,7 @@ client.on('message', function (topic, message) {
     }
 
     case 'light/set_brightness': {
-      const v = Math.max(0, Math.min(255, parseInt(message, 10)));
+      const v = Math.max(0, Math.min(100, parseInt(message, 10)));
       stickUsb.vnBlindSetPosition(snr, v, 0);
       updateLightState(snr, v);
       break;
