@@ -523,19 +523,20 @@ function updateLightState(snr, brightness) {
   devices[snr].type = "28";
   devices[snr].position = v;
 
+  // Letzte bekannte Helligkeit nur speichern, wenn >0
   if (v > 0) {
     devices[snr].lastBrightness = v;
   }
 
   if (client && client.connected) {
+    // Helligkeit publizieren
     client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
-    client.publish(
-      `warema/${snr}/light/state`,
-      v > 0 ? 'ON' : 'OFF',
-      { retain: true }
-    );
+
+    // ON/OFF automatisch abhängig von Helligkeit
+    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
   }
 }
+
 
 function normalizeWaremaBrightness(v) {
   if (v <= 0) return 0;
@@ -664,28 +665,38 @@ client.on('message', function (topic, message) {
       // nichts
       break;
 
-    case 'light/set': {
-      const cmd = message.toUpperCase();
-
-      if (cmd === 'ON') {
-        const target = dev.lastBrightness ?? 100;
-        stickUsb.vnBlindSetPosition(snr, target, 0);
-        updateLightState(snr, target);
-      }
-      else if (cmd === 'OFF') {
-        stickUsb.vnBlindSetPosition(snr, 0, 0);
-        updateLightState(snr, 0);
-      }
-      break;
-    }
-
+    /** =========================
+     *   LED / Light Handler
+     *  ========================= */
+    case 'light/set':
     case 'light/set_brightness': {
-      const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
-	  const waremaValue = normalizeWaremaBrightness(haValue);
-      stickUsb.vnBlindSetPosition(snr, waremaValue, 0);
-      updateLightState(snr, waremaValue);
+      let target = 0;
+
+      if (command === 'light/set') {
+        // ON/OFF via HA
+        if (message.toUpperCase() === 'ON') {
+          // zuletzt bekannte Helligkeit oder default 100
+          target = dev.lastBrightness ?? 100;
+        } else if (message.toUpperCase() === 'OFF') {
+          target = 0;
+        } else {
+          log.warn(`Unrecognized light/set payload: ${message}`);
+          break;
+        }
+      } else if (command === 'light/set_brightness') {
+        // Helligkeit setzen, gleichzeitig ein/aus
+        const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
+        target = normalizeWaremaBrightness(haValue);
+      }
+
+      // Position am Stick setzen
+      stickUsb.vnBlindSetPosition(snr, target, 0);
+
+      // Local State aktualisieren und MQTT publizieren
+      updateLightState(snr, target);
       break;
-    }
+}
+
 
     default:
       log.warn('Unrecognised command: ' + command);
