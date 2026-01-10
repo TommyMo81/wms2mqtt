@@ -641,11 +641,11 @@ client.on('message', function (topic, message) {
 
       if (cmd === 'ON') {
         const target = dev.lastBrightness ?? 255;
-        stickUsb.vnBlindSetPosition(snr, target);
+        stickUsb.vnBlindSetPosition(snr, target, 0);
         updateLightState(snr, target);
       }
       else if (cmd === 'OFF') {
-        stickUsb.vnBlindSetPosition(snr, 0);
+        stickUsb.vnBlindSetPosition(snr, 0, 0);
         updateLightState(snr, 0);
       }
       break;
@@ -653,7 +653,7 @@ client.on('message', function (topic, message) {
 
     case 'light/set_brightness': {
       const v = Math.max(0, Math.min(255, parseInt(message, 10)));
-      stickUsb.vnBlindSetPosition(snr, v);
+      stickUsb.vnBlindSetPosition(snr, v, 0);
       updateLightState(snr, v);
       break;
     }
