@@ -50,6 +50,8 @@ const WAREMA_LED_STEPS = [
   1
 ];
 
+const pendingBrightness = {};
+
 /** =========================
  *   Helpers
  *  ========================= */
@@ -473,7 +475,15 @@ function callback(err, msg) {
       // Für LED: Position = Helligkeit
       if (dev.type === "28") {
         if (typeof msg.payload.position !== "undefined") {
-		  const brightness = normalizeWaremaBrightness(msg.payload.position);
+		  const raw = msg.payload.position;
+
+          // Einschalt-Impuls von Warema ignorieren
+          if (raw === 1 && dev.position === 0) {
+            log.debug(`Ignoring initial LED step 1 for ${snr}`);
+            return;
+          }
+
+          const brightness = normalizeWaremaBrightness(raw);
           updateLightState(snr, brightness);
         }
       } else {
@@ -668,7 +678,10 @@ client.on('message', function (topic, message) {
       const cmd = message.toUpperCase();
 
       if (cmd === 'ON') {
-        const target = dev.lastBrightness ?? 100;
+        const target = dev.lastBrightness && dev.lastBrightness > 1 ? dev.lastBrightness : 100;
+
+        pendingBrightness[snr] = target;
+
         stickUsb.vnBlindSetPosition(snr, target, 0);
         updateLightState(snr, target);
       }
@@ -681,9 +694,17 @@ client.on('message', function (topic, message) {
 
     case 'light/set_brightness': {
       const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
-	  const waremaValue = normalizeWaremaBrightness(haValue);
-      stickUsb.vnBlindSetPosition(snr, waremaValue, 0);
-      updateLightState(snr, waremaValue);
+      const waremaValue = normalizeWaremaBrightness(haValue);
+
+      pendingBrightness[snr] = waremaValue;
+
+      clearTimeout(pendingBrightness[`${snr}_timer`]);
+      pendingBrightness[`${snr}_timer`] = setTimeout(() => {
+        const target = pendingBrightness[snr];
+        stickUsb.vnBlindSetPosition(snr, target, 0);
+        updateLightState(snr, target);
+      }, 250); // 250 ms nach letzter Sliderbewegung
+
       break;
     }
 
