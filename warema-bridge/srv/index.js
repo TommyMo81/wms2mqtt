@@ -318,7 +318,7 @@ function registerDevice(element) {
         state_topic: `warema/${element.snr}/light/state`,
         brightness_command_topic: `warema/${element.snr}/light/set_brightness`,
         brightness_state_topic: `warema/${element.snr}/light/brightness`,
-        brightness_scale: 100,
+        brightness_scale: 255,
         supported_color_modes: ["brightness"],
         color_mode: "brightness",
         payload_on: 'ON',
@@ -459,15 +459,7 @@ function callback(err, msg) {
       // Für LED: Position = Helligkeit
       if (dev.type === "28") {
         if (typeof msg.payload.position !== "undefined") {
-          const brightness = Number(msg.payload.position);
-          dev.position = brightness;
-          dev.lastBrightness = brightness > 0 ? brightness : (dev.lastBrightness || 100);
-
-          // Light-Topics
-          if (client && client.connected) {
-            client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: true });
-            client.publish(`warema/${snr}/light/state`, brightness > 0 ? 'ON' : 'OFF', { retain: true });
-          }
+          updateLightState(snr, msg.payload.position);
         }
       } else {
         // Standard Cover-Handling
@@ -506,6 +498,27 @@ function callback(err, msg) {
 
   if (client && client.connected) {
     client.publish('warema/bridge/state', 'online', { retain: true });
+  }
+}
+
+function updateLightState(snr, brightness255) {
+  const v = Math.max(0, Math.min(255, Number(brightness255)));
+
+  if (!devices[snr]) devices[snr] = {};
+  devices[snr].type = "28";
+  devices[snr].position = v;
+
+  if (v > 0) {
+    devices[snr].lastBrightness = v;
+  }
+
+  if (client && client.connected) {
+    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
+    client.publish(
+      `warema/${snr}/light/state`,
+      v > 0 ? 'ON' : 'OFF',
+      { retain: true }
+    );
   }
 }
 
@@ -625,33 +638,23 @@ client.on('message', function (topic, message) {
 
     case 'light/set': {
       const cmd = message.toUpperCase();
+
       if (cmd === 'ON') {
-        const target = dev.lastBrightness || 100;
+        const target = dev.lastBrightness ?? 255;
         stickUsb.vnBlindSetPosition(snr, target);
-        if (client && client.connected) {
-          client.publish(`warema/${snr}/light/state`, 'ON', { retain: true });
-          client.publish(`warema/${snr}/light/brightness`, String(target), { retain: true });
-        }
-      } else if (cmd === 'OFF') {
+        updateLightState(snr, target);
+      }
+      else if (cmd === 'OFF') {
         stickUsb.vnBlindSetPosition(snr, 0);
-        if (client && client.connected) {
-          client.publish(`warema/${snr}/light/state`, 'OFF', { retain: true });
-          client.publish(`warema/${snr}/light/brightness`, '0', { retain: true });
-        }
-      } else {
-        log.warn('Unrecognised light/set payload: ' + message);
+        updateLightState(snr, 0);
       }
       break;
     }
 
     case 'light/set_brightness': {
-      const v = Math.max(0, Math.min(100, parseInt(message, 10)));
-      devices[snr] = { ...(devices[snr] || {}), lastBrightness: v, position: v, type: dev.type || devices[snr]?.type };
+      const v = Math.max(0, Math.min(255, parseInt(message, 10)));
       stickUsb.vnBlindSetPosition(snr, v);
-      if (client && client.connected) {
-        client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
-        client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
-      }
+      updateLightState(snr, v);
       break;
     }
 
