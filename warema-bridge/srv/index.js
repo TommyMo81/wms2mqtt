@@ -37,6 +37,19 @@ const weatherCache = new Map();     // Cache für Weather-Dedup
 const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const windStats = new Map();        // SNR -> { samples: [{t, v}], lastPublish }
 
+const WAREMA_LED_STEPS = [
+  100,
+  89,
+  78,
+  67,
+  56,
+  45,
+  34,
+  23,
+  12,
+  1
+];
+
 /** =========================
  *   Helpers
  *  ========================= */
@@ -319,6 +332,7 @@ function registerDevice(element) {
         brightness_command_topic: `warema/${element.snr}/light/set_brightness`,
         brightness_state_topic: `warema/${element.snr}/light/brightness`,
         brightness_scale: 100,
+		brightness_step: 11,
         supported_color_modes: ["brightness"],
         color_mode: "brightness",
         payload_on: 'ON',
@@ -459,7 +473,8 @@ function callback(err, msg) {
       // Für LED: Position = Helligkeit
       if (dev.type === "28") {
         if (typeof msg.payload.position !== "undefined") {
-          updateLightState(snr, msg.payload.position);
+		  const brightness = normalizeWaremaBrightness(msg.payload.position);
+          updateLightState(snr, brightness);
         }
       } else {
         // Standard Cover-Handling
@@ -521,6 +536,24 @@ function updateLightState(snr, brightness) {
     );
   }
 }
+
+function normalizeWaremaBrightness(v) {
+  if (v <= 0) return 0;
+
+  // nächstgelegene bekannte Stufe finden
+  let best = WAREMA_LED_STEPS[0];
+  let diff = Math.abs(v - best);
+
+  for (const s of WAREMA_LED_STEPS) {
+    const d = Math.abs(v - s);
+    if (d < diff) {
+      diff = d;
+      best = s;
+    }
+  }
+  return best;
+}
+
 
 /** =========================
  *   Stick & MQTT Setup
@@ -627,11 +660,6 @@ client.on('message', function (topic, message) {
       break;
 
     // ======= LED / Light (Typ 28) =======
-    case 'light':
-      // falls jemand 'warema/<snr>/light' ohne Subtopic published
-      log.warn('Unrecognized light command root');
-      break;
-
     case 'light.set': // defensiv, falls Broker Subtopic anders zusammensetzt
       // nichts
       break;
@@ -652,9 +680,10 @@ client.on('message', function (topic, message) {
     }
 
     case 'light/set_brightness': {
-      const v = Math.max(0, Math.min(100, parseInt(message, 10)));
-      stickUsb.vnBlindSetPosition(snr, v, 0);
-      updateLightState(snr, v);
+      const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
+	  const waremaValue = normalizeWaremaBrightness(haValue);
+      stickUsb.vnBlindSetPosition(snr, waremaValue, 0);
+      updateLightState(snr, waremaValue);
       break;
     }
 
