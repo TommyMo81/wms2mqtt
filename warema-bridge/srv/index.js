@@ -319,6 +319,8 @@ function registerDevice(element) {
         brightness_command_topic: `warema/${element.snr}/light/set_brightness`,
         brightness_state_topic: `warema/${element.snr}/light/brightness`,
         brightness_scale: 100,
+        supported_color_modes: ["brightness"],
+        color_mode: "brightness",
         payload_on: 'ON',
         payload_off: 'OFF',
         optimistic: false,
@@ -558,8 +560,15 @@ client.on('error', function (error) {
 });
 
 client.on('message', function (topic, message) {
-  const [scope, device, command] = topic.split('/');
+  // const [scope, device, command] = topic.split('/');
+  // const snr = device;
+  
+  const parts = topic.split('/');
+  const scope = parts[0];
+  const device = parts[1];
   const snr = device;
+  const command = parts.slice(2).join('/');
+  
   const dev = devices[snr] || {};
   message = message.toString();
 
