@@ -460,7 +460,22 @@ function callback(err, msg) {
 
       // Für LED: Position = Helligkeit
       if (dev.type === "28") {
-        return;
+         const now = Date.now();
+
+         // Wenn HA kürzlich gesteuert hat → ignorieren (Loop-Schutz)
+         if (dev.haControlUntil && now < dev.haControlUntil) {
+           return;
+         }
+
+         // Nur Endzustände von externer Steuerung (Fernbedienung)
+         if (
+           typeof msg.payload.position !== "undefined" &&
+           msg.payload.moving === false
+         ) {
+           const brightness = normalizeWaremaBrightness(msg.payload.position);
+           updateLightState(snr, brightness);
+         }
+         return;
       } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
@@ -670,6 +685,8 @@ client.on('message', function (topic, message) {
 
       stickUsb.vnBlindSetPosition(snr, target, 0);
 
+      devices[snr].haControlUntil = Date.now() + 3000;
+	  
       // nur lokal merken, NICHT als Feedbackschleife
       updateLightState(snr, target);
       break;
