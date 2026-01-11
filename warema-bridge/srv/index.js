@@ -494,14 +494,6 @@ function callback(err, msg) {
         if (typeof msg.payload.angle !== "undefined") {
           devices[snr].tilt = msg.payload.tilt;
           client.publish(`warema/${snr}/tilt`, '' + msg.payload.angle, { retain: true });
-          if (msg.payload.moving === false) {
-            if (msg.payload.angle === 0)
-              client.publish(`warema/${snr}/state_tilt`, 'open', { retain: true });
-            else if (msg.payload.angle === 100)
-              client.publish(`warema/${snr}/state_tilt`, 'closed', { retain: true });
-            else
-              client.publish(`warema/${snr}/state_tilt`, 'stopped', { retain: true });
-          }
         }
       }
       break;
@@ -631,16 +623,16 @@ client.on('message', function (topic, message) {
           break;
         case 'CLOSE':
           stickUsb.vnBlindSetPosition(snr, 100, 0);
-          client.publish(`warema/${snr}/state`, 'closing');
+          client.publish(`warema/${snr}/state`, 'closing', { retain: false });
           break;
         case 'CLOSETILT':
           stickUsb.vnBlindSetPosition(snr, 0, 100);
-          client.publish(`warema/${snr}/state`, 'closing');
+          client.publish(`warema/${snr}/state`, 'closing', { retain: false });
           break;
         case 'OPEN':
         case 'OPENTILT':
           stickUsb.vnBlindSetPosition(snr, 0, 0);
-          client.publish(`warema/${snr}/state`, 'opening');
+          client.publish(`warema/${snr}/state`, 'opening', { retain: false });
           break;
         case 'STOP':
           stickUsb.vnBlindStop(snr);
