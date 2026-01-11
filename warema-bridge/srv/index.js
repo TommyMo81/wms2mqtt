@@ -250,13 +250,7 @@ function registerDevice(element) {
         command_topic: `warema/${element.snr}/set`,
         state_topic: `warema/${element.snr}/state`,
         position_topic: `warema/${element.snr}/position`,
-        tilt_status_topic: `warema/${element.snr}/tilt`,
-        set_position_topic: `warema/${element.snr}/set_position`,
-        tilt_command_topic: `warema/${element.snr}/set_tilt`,
-        tilt_closed_value: -100,
-        tilt_opened_value: 100,
-        tilt_min: -100,
-        tilt_max: 100
+        set_position_topic: `warema/${element.snr}/set_position`
       };
       topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
       break;
