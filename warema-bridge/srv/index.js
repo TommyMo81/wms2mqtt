@@ -37,7 +37,7 @@ const weatherCache = new Map();     // Cache für Weather-Dedup
 const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const windStats = new Map();        // SNR -> { samples: [{t, v}], lastPublish }
 
-WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
+const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
 
 /** =========================
  *   Helpers
