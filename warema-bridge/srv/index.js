@@ -364,12 +364,7 @@ function registerDevice(element) {
   if (element.type !== "63") {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
   }
-  
-  devices[element.snr] = {
-    type: element.type,
-    ledStepIndex: 0,      // aktuelle Stufe
-    lastStepIndex: 0      // letzte Stufe vor OFF
-  };
+  devices[element.snr] = { type: element.type, lastBrightness: 100 };
 
   // Availability online setzen
   if (client && client.connected) {
@@ -465,19 +460,11 @@ function callback(err, msg) {
       log.debug('Position update:\n' + JSON.stringify(msg.payload, null, 2));
 
       // Für LED: Position = Helligkeit
-      if (dev.type === "28" && typeof msg.payload.position !== "undefined") {
-        const pos = Number(msg.payload.position);
-
-        if (pos <= 0) {
-          updateLightState(snr, 0);
-          return;
+      if (dev.type === "28") {
+        if (typeof msg.payload.position !== "undefined") {
+		  const brightness = normalizeWaremaBrightness(msg.payload.position);
+          updateLightState(snr, brightness);
         }
-
-        const stepIndex = percentToStepIndex(pos);
-        dev.ledStepIndex = stepIndex;
-        dev.lastStepIndex = stepIndex;
-
-        updateLightState(snr, stepIndexToValue(stepIndex));
       } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
@@ -521,13 +508,21 @@ function callback(err, msg) {
 function updateLightState(snr, brightness) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
 
+  if (!devices[snr]) devices[snr] = {};
+  devices[snr].type = "28";
+  devices[snr].position = v;
+
+  // Letzte bekannte Helligkeit nur speichern, wenn >0
+  if (v > 0) {
+    devices[snr].lastBrightness = v;
+  }
+
   if (client && client.connected) {
+    // Helligkeit publizieren
     client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
-    client.publish(
-      `warema/${snr}/light/state`,
-      v > 0 ? 'ON' : 'OFF',
-      { retain: true }
-    );
+
+    // ON/OFF automatisch abhängig von Helligkeit
+    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
   }
 }
 
@@ -547,27 +542,6 @@ function normalizeWaremaBrightness(v) {
     }
   }
   return best;
-}
-
-function percentToStepIndex(percent) {
-  let bestIndex = 0;
-  let diff = Infinity;
-
-  WAREMA_LED_STEPS.forEach((v, i) => {
-    const d = Math.abs(v - percent);
-    if (d < diff) {
-      diff = d;
-      bestIndex = i;
-    }
-  });
-
-  return bestIndex;
-}
-
-function stepIndexToValue(index) {
-  return WAREMA_LED_STEPS[
-    Math.max(0, Math.min(WAREMA_LED_STEPS.length - 1, index))
-  ];
 }
 
 
@@ -685,41 +659,32 @@ client.on('message', function (topic, message) {
      *  ========================= */
     case 'light/set':
     case 'light/set_brightness': {
-      if (!devices[snr]) return;
-      const dev = devices[snr];
+      let target = 0;
 
-     let newIndex = dev.ledStepIndex ?? 0;
-
-      // ===== ON / OFF =====
       if (command === 'light/set') {
+        // ON/OFF via HA
         if (message.toUpperCase() === 'ON') {
-          newIndex = dev.lastStepIndex ?? 0;
+          // zuletzt bekannte Helligkeit oder default 100
+          target = dev.lastBrightness ?? 100;
         } else if (message.toUpperCase() === 'OFF') {
-          dev.lastStepIndex = dev.ledStepIndex;
-          stickUsb.vnBlindSetPosition(snr, 0, 0);
-          updateLightState(snr, 0);
-          return;
+          target = 0;
+        } else {
+          log.warn(`Unrecognized light/set payload: ${message}`);
+          break;
         }
+      } else if (command === 'light/set_brightness') {
+        // Helligkeit setzen, gleichzeitig ein/aus
+        const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
+        target = normalizeWaremaBrightness(haValue);
       }
 
-      // ===== Slider =====
-      if (command === 'light/set_brightness') {
-        const percent = Math.max(0, Math.min(100, Number(message)));
-        newIndex = percentToStepIndex(percent);
-      }
-
-      // gleiche Stufe → nichts senden
-      if (newIndex === dev.ledStepIndex) return;
-
-      dev.ledStepIndex = newIndex;
-      dev.lastStepIndex = newIndex;
-
-      const target = stepIndexToValue(newIndex);
+      // Position am Stick setzen
       stickUsb.vnBlindSetPosition(snr, target, 0);
+
+      // Local State aktualisieren und MQTT publizieren
       updateLightState(snr, target);
       break;
-    }
-
+}
 
 
     default:
