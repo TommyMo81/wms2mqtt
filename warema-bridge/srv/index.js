@@ -321,12 +321,11 @@ function registerDevice(element) {
         brightness_command_topic: `warema/${element.snr}/light/set_brightness`,
         brightness_state_topic: `warema/${element.snr}/light/brightness`,
         brightness_scale: 100,
-		brightness_step: 11,
         supported_color_modes: ["brightness"],
         color_mode: "brightness",
         payload_on: 'ON',
         payload_off: 'OFF',
-        optimistic: false,
+        optimistic: true,
         unique_id: `${element.snr}_light`,
         default_entity_id: `light.${element.snr}`
       };
@@ -461,10 +460,7 @@ function callback(err, msg) {
 
       // Für LED: Position = Helligkeit
       if (dev.type === "28") {
-        if (typeof msg.payload.position !== "undefined") {
-		  const brightness = normalizeWaremaBrightness(msg.payload.position);
-          updateLightState(snr, brightness);
-        }
+        return;
       } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
@@ -519,10 +515,10 @@ function updateLightState(snr, brightness) {
 
   if (client && client.connected) {
     // Helligkeit publizieren
-    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
+    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: false });
 
     // ON/OFF automatisch abhängig von Helligkeit
-    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
+    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: false });
   }
 }
 
@@ -662,30 +658,22 @@ client.on('message', function (topic, message) {
       let target = 0;
 
       if (command === 'light/set') {
-        // ON/OFF via HA
         if (message.toUpperCase() === 'ON') {
-          // zuletzt bekannte Helligkeit oder default 100
           target = dev.lastBrightness ?? 100;
         } else if (message.toUpperCase() === 'OFF') {
           target = 0;
-        } else {
-          log.warn(`Unrecognized light/set payload: ${message}`);
-          break;
         }
-      } else if (command === 'light/set_brightness') {
-        // Helligkeit setzen, gleichzeitig ein/aus
+      } else {
         const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
         target = normalizeWaremaBrightness(haValue);
       }
 
-      // Position am Stick setzen
       stickUsb.vnBlindSetPosition(snr, target, 0);
 
-      // Local State aktualisieren und MQTT publizieren
+      // nur lokal merken, NICHT als Feedbackschleife
       updateLightState(snr, target);
       break;
-}
-
+    }
 
     default:
       log.warn('Unrecognised command: ' + command);
