@@ -1,127 +1,71 @@
+
 'use strict';
 
 const warema = require('./warema-wms-venetian-blinds');
 const log = require('./logger');
 const mqtt = require('mqtt');
-const fs = require('fs');
 
-/**
- * =========================
- * ENV / Defaults (preserve original names)
- * =========================
- * NOTE: All previously used process.env variables are kept as-is:
- *  - MQTT_SERVER, MQTT_USER, MQTT_PASSWORD, MQTT_VERSION, MQTT_CLIENTID
- *  - IGNORED_DEVICES, FORCE_DEVICES
- *  - POLLING_INTERVAL, MOVING_INTERVAL
- *  - WIND_AGG_WINDOW_MS, WIND_PUBLISH_INTERVAL_MS
- *  - WMS_CHANNEL, WMS_KEY, WMS_PAN_ID, WMS_SERIAL_PORT
- * New variables are optional and do not alter behavior when unset:
- *  - MQTT_QOS, LED_FINALIZE_MS, PERSIST_STATE, STATE_FILE, TEMP_EPS, LUMEN_EPS, LED_ROUND_MODE
- */
-const toInt = (val, def) => {
-  const n = Number(val);
-  return Number.isFinite(n) ? n : def;
-};
-const toBool = (val, def=false) => {
-  if (val === undefined) return def;
-  return ['1','true','TRUE','yes','YES','on','ON'].includes(String(val));
-};
+process.on('SIGINT', function () {
+  process.exit(0);
+});
 
-// === ORIGINAL ENV NAMES ===
+/** =========================
+ *   ENV / Defaults
+ *  ========================= */
 const mqttServer = process.env.MQTT_SERVER || 'mqtt://localhost';
 const ignoredDevices = process.env.IGNORED_DEVICES ? process.env.IGNORED_DEVICES.split(',') : [];
 const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split(',') : [];
-const pollingInterval = toInt(process.env.POLLING_INTERVAL, 30000);
-const movingInterval = toInt(process.env.MOVING_INTERVAL, 1000);
+const pollingInterval = parseInt(process.env.POLLING_INTERVAL || '30000', 10);
+const movingInterval = parseInt(process.env.MOVING_INTERVAL || '1000', 10);
+
+// Wind-Aggregation (leserliche Statistik)
+const WIND_AGG_WINDOW_MS = parseInt(process.env.WIND_AGG_WINDOW_MS || '60000', 10);        // Fenster: 60s
+const WIND_PUBLISH_INTERVAL_MS = parseInt(process.env.WIND_PUBLISH_INTERVAL_MS || '60000', 10); // Publizieren: 60s
+
 const settingsPar = {
-  wmsChannel: toInt(process.env.WMS_CHANNEL, 17),
+  wmsChannel: parseInt(process.env.WMS_CHANNEL || '17', 10),
   wmsKey: process.env.WMS_KEY || '00112233445566778899AABBCCDDEEFF',
   wmsPanid: process.env.WMS_PAN_ID || 'FFFF',
   wmsSerialPort: process.env.WMS_SERIAL_PORT || '/dev/ttyUSB0',
 };
-const WIND_AGG_WINDOW_MS = toInt(process.env.WIND_AGG_WINDOW_MS, 60000);
-const WIND_PUBLISH_INTERVAL_MS = toInt(process.env.WIND_PUBLISH_INTERVAL_MS, 60000);
 
-// === OPTIONAL NEW ENV NAMES ===
-const MQTT_QOS = toInt(process.env.MQTT_QOS, 0);
-const LED_FINALIZE_MS = toInt(process.env.LED_FINALIZE_MS, 1000);
-const PERSIST_STATE = toBool(process.env.PERSIST_STATE, false);
-const STATE_FILE = process.env.STATE_FILE || 'devices-state.json';
-const TEMP_EPS = Number(process.env.TEMP_EPS ?? 0.1);
-const LUMEN_EPS = Number(process.env.LUMEN_EPS ?? 1);
-const LED_ROUND_MODE = (process.env.LED_ROUND_MODE || 'nearest').toLowerCase();
+/** =========================
+ *   State
+ *  ========================= */
+const devices = {};                 // Map von SNR -> { type, position, tilt, lastBrightness }
+const weatherCache = new Map();     // Cache für Weather-Dedup
+const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
+const windStats = new Map();        // SNR -> { samples: [{t, v}], lastPublish }
 
-/**
- * =========================
- * Types & Constants
- * =========================
- */
-const TYPE = {
-  WEATHER: "63",
-  REMOTE_PRO: "07",
-  WEBCONTROL_PRO: "09",
-  PLUG: "20",
-  ACTUATOR_UP: "21",
-  SMART_SOCKET: "24",
-  VERTICAL_AWNING: "25",
-  LED: "28",
-  SLAT_ROOF: "2A",
-};
+const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
 
-const WAREMA_LED_STEPS = [100, 89, 78, 67, 56, 45, 34, 23, 12, 1];
+/** =========================
+ *   Helpers
+ *  ========================= */
 
-/**
- * =========================
- * State
- * =========================
- */
-const devices = {}; // Map SNR -> { type, position, tilt, lastBrightness, haControlUntil, pendingLightFinalize }
-const weatherCache = new Map();
-const rawMessageCache = new Map();
-const windStats = new Map();
-let weatherPollTimer = null;
-let rawCacheCleanerTimer = null;
-let client = null;
-
-/**
- * =========================
- * Helpers
- * =========================
- */
-const toSnrNum = snr => toInt(snr, 0);
-
-function publish(topic, payload, { retain = true, qos = MQTT_QOS } = {}) {
-  if (!client || !client.connected) {
-    log.warn(`MQTT not connected. Skipping publish to ${topic}`);
-    return;
-  }
-  try {
-    client.publish(topic, typeof payload === 'string' ? payload : JSON.stringify(payload), { retain, qos });
-  } catch (e) {
-    log.error(`Publish error for ${topic}: ${e}`);
-  }
-}
-
+// Prüft duplizierte Rohmeldung vom Stick
 function isDuplicateRawMessage(stickCmd, snr) {
   const currentTime = Date.now();
   const messageKey = `${snr}_${stickCmd}`;
-  const cached = rawMessageCache.get(messageKey);
-  const minTimeDiff = 1000;
-  if (cached && (currentTime - cached.timestamp) < minTimeDiff) return true;
+  const cachedMessage = rawMessageCache.get(messageKey);
+  const minTimeDiff = 1000; // 1s Mindestabstand
+
+  if (cachedMessage && (currentTime - cachedMessage.timestamp) < minTimeDiff) {
+    return true;
+  }
+
   rawMessageCache.set(messageKey, { timestamp: currentTime });
+
+  // Cleanup (älter als 10s)
+  for (const [key, value] of rawMessageCache.entries()) {
+    if ((currentTime - value.timestamp) > 10000) {
+      rawMessageCache.delete(key);
+    }
+  }
   return false;
 }
 
-function startRawCacheCleaner() {
-  if (rawCacheCleanerTimer) return;
-  rawCacheCleanerTimer = setInterval(() => {
-    const now = Date.now();
-    for (const [key, value] of rawMessageCache.entries()) {
-      if ((now - value.timestamp) > 10000) rawMessageCache.delete(key);
-    }
-  }, 5000);
-}
-
+// Wind: Sample hinzufügen und altes aus Fenster entfernen
 function addWindSample(snr, windValue) {
   const now = Date.now();
   let entry = windStats.get(snr);
@@ -130,123 +74,96 @@ function addWindSample(snr, windValue) {
     windStats.set(snr, entry);
   }
   entry.samples.push({ t: now, v: Number(windValue) });
+  // Fenster säubern
   entry.samples = entry.samples.filter(s => (now - s.t) <= WIND_AGG_WINDOW_MS);
 }
 
-function computeWindStats(snr) {
-  const entry = windStats.get(snr);
-  if (!entry || !entry.samples.length) return null;
-  const vals = entry.samples.map(s => s.v);
-  const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  return { avg: Math.round(avg * 10) / 10, min: Math.round(min * 10) / 10, max: Math.round(max * 10) / 10 };
-}
-
-function maybePublishWindStats(snr) {
+// Wind: ggf. Durchschnitt publizieren
+function maybePublishWindAverage(snr) {
   const entry = windStats.get(snr);
   const now = Date.now();
   if (!entry) return;
   if ((now - entry.lastPublish) < WIND_PUBLISH_INTERVAL_MS) return;
-  const stats = computeWindStats(snr);
-  if (!stats) return;
-  publish(`warema/${snr}/wind/state`, stats.avg.toString());
-  publish(`warema/${snr}/wind_max/state`, stats.max.toString());
-  publish(`warema/${snr}/wind_min/state`, stats.min.toString());
-  entry.lastPublish = now;
-}
 
-function shouldPublishWeather(snr, weather) {
-  const currentTime = Date.now();
-  const cached = weatherCache.get(snr);
-  const minTimeDiff = 5000;
-  if (!cached) return true;
-  if ((currentTime - cached.timestamp) <= minTimeDiff) return false;
-  const last = cached.last || {};
-  const tempChanged = Math.abs(Number(weather.temp) - Number(last.temp ?? weather.temp)) >= TEMP_EPS;
-  const lumenChanged = Math.abs(Number(weather.lumen) - Number(last.lumen ?? weather.lumen)) >= LUMEN_EPS;
-  const rainChanged = Boolean(weather.rain) !== Boolean(last.rain ?? weather.rain);
-  return tempChanged || lumenChanged || rainChanged;
-}
+  const samples = entry.samples;
+  if (!samples.length) return;
 
-function updateWeatherCache(snr, weather) {
-  weatherCache.set(snr, { last: { temp: weather.temp, wind: weather.wind, lumen: weather.lumen, rain: weather.rain }, timestamp: Date.now() });
-}
+  const avg = samples.reduce((acc, s) => acc + s.v, 0) / samples.length;
+  const rounded = Math.round(avg * 10) / 10; // eine Nachkommastelle
 
-function normalizeWaremaBrightness(v) {
-  const val = Math.max(0, Math.min(100, Number(v)));
-  if (val <= 0) return 0;
-
-  const sorted = [...WAREMA_LED_STEPS].sort((a, b) => a - b);
-
-  if (LED_ROUND_MODE === 'floor') {
-    let result = sorted[0];
-    for (const s of sorted) {
-      if (s <= val) result = s;
-    }
-    return result;
+  if (client && client.connected) {
+    client.publish(`warema/${snr}/wind/state`, rounded.toString(), { retain: true });
+    entry.lastPublish = now;
+    log.debug(`Published averaged wind ${rounded} m/s for ${snr}`);
+  } else {
+    log.warn(`MQTT client not connected, skipping averaged wind publish for ${snr}`);
   }
-
-  if (LED_ROUND_MODE === 'ceil') {
-    for (const s of sorted) {
-      if (s >= val) return s;
-    }
-    return sorted[sorted.length - 1];
-  }
-
-  // nearest (default)
-  let best = sorted[0];
-  let diff = Math.abs(val - best);
-  for (const s of sorted) {
-    const d = Math.abs(val - s);
-    if (d < diff) {
-      diff = d;
-      best = s;
-    }
-  }
-  return best;
 }
 
-
-function updateLightState(snr, brightness) {
-  const v = Math.max(0, Math.min(100, Number(brightness)));
-  if (!devices[snr]) devices[snr] = {};
-  devices[snr].type = TYPE.LED;
-  devices[snr].position = v;
-  if (v > 0) devices[snr].lastBrightness = v;
-  publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
-  publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
-}
-
-function callStickSetPosition(snr, position, tilt=0, retry=1) {
+/** =========================
+ *   Weather polling
+ *  ========================= */
+function pollWeatherData() {
   try {
-    stickUsb.vnBlindSetPosition(snr, position, tilt);
-  } catch (e) {
-    if (retry > 0) setTimeout(() => callStickSetPosition(snr, position, tilt, retry-1), 250);
+    const weatherData = stickUsb.getLastWeatherBroadcast();
+    if (weatherData && weatherData.snr) {
+      const weatherKey = weatherData.snr;
+      const currentTime = Date.now();
+      const weatherHash = `${weatherData.temp}_${weatherData.wind}_${weatherData.lumen}_${weatherData.rain}`;
+      const cachedWeather = weatherCache.get(weatherKey);
+      const minTimeDiff = 5000; // mindestens 5s zwischen identischen Nachrichten
+
+      const shouldSend =
+        !cachedWeather ||
+        cachedWeather.hash !== weatherHash ||
+        (currentTime - cachedWeather.timestamp) > minTimeDiff;
+
+      // Gerät registrieren (Sensoren) falls nötig
+      if (!devices[weatherData.snr]) {
+        registerDevice({ snr: weatherData.snr, type: "63" });
+      }
+
+      // Wind immer sammeln; Veröffentlichung zeitgesteuert
+      addWindSample(weatherData.snr, weatherData.wind);
+      maybePublishWindAverage(weatherData.snr);
+
+      if (shouldSend) {
+        if (client && client.connected) {
+          client.publish(`warema/${weatherData.snr}/illuminance/state`, weatherData.lumen.toString(), { retain: true });
+          client.publish(`warema/${weatherData.snr}/temperature/state`, weatherData.temp.toString(), { retain: true });
+          // Wind wird durch Aggregator veröffentlicht
+          client.publish(`warema/${weatherData.snr}/rain/state`, weatherData.rain ? 'ON' : 'OFF', { retain: true });
+        } else {
+          log.warn(`MQTT client not connected, skipping weather data publish for ${weatherKey}`);
+        }
+        weatherCache.set(weatherKey, { hash: weatherHash, timestamp: currentTime });
+      } else {
+        log.debug(`Skipping duplicate weather data for ${weatherKey} (hash: ${weatherHash}) via polling`);
+      }
+    }
+  } catch (error) {
+    log.error('Error polling weather data: ' + error.toString());
   }
 }
 
-/**
- * =========================
- * Device registration
- * =========================
- */
-
+/** =========================
+ *   Device registration
+ *  ========================= */
 function registerDevice(element) {
-  log.info(`Registering ${element.snr} with type: ${element.type}`);
-  const availability_topic = `warema/${element.snr}/availability`;
+  log.info('Registering ' + element.snr + ' with type: ' + element.type);
+
+  const availability_topic = 'warema/' + element.snr + '/availability';
   const base_payload = {
     availability: [
       { topic: 'warema/bridge/state' },
       { topic: availability_topic }
     ],
     unique_id: element.snr,
-    name: null,
-    availability_mode: 'latest'
+    name: null
   };
   const base_device = {
     identifiers: element.snr,
-    manufacturer: 'Warema',
+    manufacturer: "Warema",
     name: element.snr
   };
 
@@ -255,67 +172,75 @@ function registerDevice(element) {
   let topicForDiscovery;
 
   switch (element.type) {
-    case TYPE.WEATHER: {
+    case "63": {
+      // Weather station pro
       model = 'Weather station pro';
-      const payloadBase = { ...base_payload, device: { ...base_device, model } };
-      publish(`homeassistant/sensor/${element.snr}/illuminance/config`, {
+      const payloadBase = {
+        ...base_payload,
+        device: { ...base_device, model }
+      };
+
+      // Illuminance
+      const illuminance_payload = {
         ...payloadBase,
         state_topic: `warema/${element.snr}/illuminance/state`,
         device_class: 'illuminance',
         unique_id: `${element.snr}_illuminance`,
+        default_entity_id: `sensor.${element.snr}_illuminance`,
         unit_of_measurement: 'lx',
         state_class: 'measurement'
-      });
-      publish(`homeassistant/sensor/${element.snr}/temperature/config`, {
+      };
+      client.publish(`homeassistant/sensor/${element.snr}/illuminance/config`, JSON.stringify(illuminance_payload), { retain: true });
+
+      // Temperature
+      const temperature_payload = {
         ...payloadBase,
         state_topic: `warema/${element.snr}/temperature/state`,
         device_class: 'temperature',
         unique_id: `${element.snr}_temperature`,
+        default_entity_id: `sensor.${element.snr}_temperature`,
         unit_of_measurement: '°C',
         state_class: 'measurement',
         suggested_display_precision: 1
-      });
-      publish(`homeassistant/sensor/${element.snr}/wind/config`, {
+      };
+      client.publish(`homeassistant/sensor/${element.snr}/temperature/config`, JSON.stringify(temperature_payload), { retain: true });
+
+      // Wind (aggregiert)
+      const wind_payload = {
         ...payloadBase,
         state_topic: `warema/${element.snr}/wind/state`,
         device_class: 'wind_speed',
-        unique_id: `${element.snr}_wind_avg`,
+        unique_id: `${element.snr}_wind`,
+        default_entity_id: `sensor.${element.snr}_wind`,
         unit_of_measurement: 'm/s',
         state_class: 'measurement',
         suggested_display_precision: 1
-      });
-      publish(`homeassistant/sensor/${element.snr}/wind_max/config`, {
-        ...payloadBase,
-        state_topic: `warema/${element.snr}/wind_max/state`,
-        device_class: 'wind_speed',
-        unique_id: `${element.snr}_wind_max`,
-        unit_of_measurement: 'm/s',
-        state_class: 'measurement',
-        suggested_display_precision: 1
-      });
-      publish(`homeassistant/sensor/${element.snr}/wind_min/config`, {
-        ...payloadBase,
-        state_topic: `warema/${element.snr}/wind_min/state`,
-        device_class: 'wind_speed',
-        unique_id: `${element.snr}_wind_min`,
-        unit_of_measurement: 'm/s',
-        state_class: 'measurement',
-        suggested_display_precision: 1
-      });
-      publish(`homeassistant/binary_sensor/${element.snr}/rain/config`, {
+      };
+      client.publish(`homeassistant/sensor/${element.snr}/wind/config`, JSON.stringify(wind_payload), { retain: true });
+
+      // Rain
+      const rain_payload = {
         ...payloadBase,
         state_topic: `warema/${element.snr}/rain/state`,
         device_class: 'moisture',
-        unique_id: `${element.snr}_rain`
-      });
-      publish(availability_topic, 'online', { retain: true });
-      devices[element.snr] = { type: element.type };
+        unique_id: `${element.snr}_rain`,
+        default_entity_id: `sensor.${element.snr}_rain`,
+      };
+      client.publish(`homeassistant/binary_sensor/${element.snr}/rain/config`, JSON.stringify(rain_payload), { retain: true });
+
+      if (client && client.connected) {
+        client.publish(availability_topic, 'online', { retain: true });
+      }
+      devices[element.snr] = { type: element.type }; // Sensorgerät im Cache
+      log.info('No need to add to stick, weather updates are broadcasted. ' + element.snr + ' with type: ' + element.type);
       return;
     }
-    case TYPE.REMOTE_PRO:
-    case TYPE.WEBCONTROL_PRO:
+
+    case "07": // WMS Remote pro
+    case "09": // WMS WebControl Pro
       return;
-    case TYPE.PLUG: {
+
+    case "20": { // Plug receiver (als Cover)
       model = 'Plug receiver';
       payload = {
         ...base_payload,
@@ -330,7 +255,8 @@ function registerDevice(element) {
       topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
       break;
     }
-    case TYPE.ACTUATOR_UP: {
+
+    case "21": { // Actuator UP (als Cover)
       model = 'Actuator UP';
       payload = {
         ...base_payload,
@@ -350,18 +276,20 @@ function registerDevice(element) {
       topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
       break;
     }
-    case TYPE.SMART_SOCKET: {
+
+    case "24": { // Smart socket
       model = 'Smart socket';
       payload = {
         ...base_payload,
         device: { ...base_device, model },
         state_topic: `warema/${element.snr}/state`,
-        command_topic: `warema/${element.snr}/set`
+        command_topic: `warema/${element.snr}/set`,
       };
       topicForDiscovery = `homeassistant/switch/${element.snr}/${element.snr}/config`;
       break;
     }
-    case TYPE.VERTICAL_AWNING: {
+
+    case "25": { // Vertical awning
       model = 'Vertical awning';
       payload = {
         ...base_payload,
@@ -370,12 +298,13 @@ function registerDevice(element) {
         position_closed: 100,
         command_topic: `warema/${element.snr}/set`,
         position_topic: `warema/${element.snr}/position`,
-        set_position_topic: `warema/${element.snr}/set_position`
+        set_position_topic: `warema/${element.snr}/set_position`,
       };
       topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
       break;
     }
-    case TYPE.LED: {
+
+    case "28": { // LED -> MQTT Light mit Dimmfunktion
       model = 'LED';
       payload = {
         ...base_payload,
@@ -387,15 +316,18 @@ function registerDevice(element) {
         brightness_state_topic: `warema/${element.snr}/light/brightness`,
         brightness_scale: 100,
         supported_color_modes: ["brightness"],
+        color_mode: "brightness",
         payload_on: 'ON',
         payload_off: 'OFF',
         optimistic: true,
-        unique_id: `${element.snr}_light`
+        unique_id: `${element.snr}_light`,
+        default_entity_id: `light.${element.snr}`
       };
       topicForDiscovery = `homeassistant/light/${element.snr}/${element.snr}/config`;
       break;
     }
-    case TYPE.SLAT_ROOF: {
+
+    case "2A": { // Slat roof
       model = 'Slat roof';
       payload = {
         ...base_payload,
@@ -403,66 +335,114 @@ function registerDevice(element) {
         tilt_status_topic: `warema/${element.snr}/tilt`,
         tilt_command_topic: `warema/${element.snr}/set_tilt`,
         position_topic: `warema/${element.snr}/position`,
-        set_position_topic: `warema/${element.snr}/set_position`
+        set_position_topic: `warema/${element.snr}/set_position`,
       };
       topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
       break;
     }
+
     default:
-      log.warn(`Unrecognized device type: ${element.type}`);
+      log.warn('Unrecognized device type: ' + element.type);
       return;
   }
 
-  if (ignoredDevices.includes(String(element.snr))) return;
-  if (element.type !== TYPE.WEATHER) {
-    stickUsb.vnBlindAdd(toSnrNum(element.snr), String(element.snr));
+  if (ignoredDevices.includes(element.snr.toString())) {
+    log.info('Ignoring and removing device ' + element.snr + ' (type ' + element.type + ')');
+    return;
   }
-  devices[element.snr] = {...(devices[element.snr] || {}), type: element.type,  lastBrightness: devices[element.snr]?.lastBrightness ?? 100};
 
-  publish(availability_topic, 'online', { retain: true });
-  publish(topicForDiscovery, payload, { retain: true });
+  log.debug('Adding device ' + element.snr + ' (type ' + element.type + ')');
+
+  // Für steuerbare Geräte auf den Stick legen
+  if (element.type !== "63") {
+    stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
+  }
+  devices[element.snr] = { type: element.type, lastBrightness: 100 };
+
+  // Availability online setzen
+  if (client && client.connected) {
+    client.publish(availability_topic, 'online', { retain: true });
+  }
+
+  // Discovery publizieren
+  client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
 }
 
-/**
- * =========================
- * Stick Callback
- * =========================
- */
+/** =========================
+ *   Stick Callback
+ *  ========================= */
 function callback(err, msg) {
-  if (err) log.error(err);
+  if (err) {
+    log.error(err);
+  }
   if (!msg) return;
+
+  log.debug('Callback received topic: ' + msg.topic);
 
   switch (msg.topic) {
     case 'wms-vb-init-completion':
+      log.info('Warema init completed');
       stickUsb.setPosUpdInterval(pollingInterval);
       stickUsb.setWatchMovingBlindsInterval(movingInterval);
+      log.info('Scanning...');
       stickUsb.scanDevices({ autoAssignBlinds: false });
       break;
 
     case 'wms-vb-scanned-devices':
+      log.debug('Scanned devices:\n' + JSON.stringify(msg.payload, null, 2));
       if (forceDevices && forceDevices.length) {
         forceDevices.forEach(deviceString => {
           const [snr, type] = deviceString.split(':');
-          registerDevice({ snr, type: type || TYPE.VERTICAL_AWNING });
+          registerDevice({ snr: snr, type: type || "25" });
         });
       } else {
         msg.payload.devices.forEach(element => registerDevice(element));
       }
+      log.debug('Registered devices:\n' + JSON.stringify(stickUsb.vnBlindsList(), null, 2));
       break;
 
     case 'wms-vb-rcv-weather-broadcast': {
+      log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2));
       const stickCmd = msg.payload.stickCmd || '';
       const w = msg.payload.weather;
-      if (isDuplicateRawMessage(stickCmd, w.snr)) break;
-      if (!devices[w.snr]) registerDevice({ snr: w.snr, type: TYPE.WEATHER });
+
+      if (isDuplicateRawMessage(stickCmd, w.snr)) {
+        log.debug('Skipping duplicate raw hardware message for device: ' + w.snr);
+        break;
+      }
+
+      if (!devices[w.snr]) {
+        registerDevice({ snr: w.snr, type: "63" });
+      }
+
+      // Wind immer in Aggregator
       addWindSample(w.snr, w.wind);
-      maybePublishWindStats(w.snr);
-      const weather = { temp: w.temp, wind: w.wind, lumen: w.lumen, rain: w.rain };
-      if (shouldPublishWeather(w.snr, weather)) {
-        publish(`warema/${w.snr}/illuminance/state`, w.lumen.toString());
-        publish(`warema/${w.snr}/temperature/state`, w.temp.toString());
-        publish(`warema/${w.snr}/rain/state`, w.rain ? 'ON' : 'OFF');
-        updateWeatherCache(w.snr, weather);
+      maybePublishWindAverage(w.snr);
+
+      // Dedup Hash für die restlichen Werte
+      const weatherKey = w.snr;
+      const currentTime = Date.now();
+      const weatherHash = `${w.temp}_${w.wind}_${w.lumen}_${w.rain}`;
+      const cachedWeather = weatherCache.get(weatherKey);
+      const minTimeDiff = 5000;
+
+      const shouldSend =
+        !cachedWeather ||
+        cachedWeather.hash !== weatherHash ||
+        (currentTime - cachedWeather.timestamp) > minTimeDiff;
+
+      if (shouldSend) {
+        if (client && client.connected) {
+          client.publish(`warema/${w.snr}/illuminance/state`, w.lumen.toString(), { retain: true });
+          client.publish(`warema/${w.snr}/temperature/state`, w.temp.toString(), { retain: true });
+          // Wind: wird über Aggregator gesendet
+          client.publish(`warema/${w.snr}/rain/state`, w.rain ? 'ON' : 'OFF', { retain: true });
+        } else {
+          log.warn('MQTT client not connected, skipping weather data publish for ' + weatherKey);
+        }
+        weatherCache.set(weatherKey, { hash: weatherHash, timestamp: currentTime });
+      } else {
+        log.debug('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
       }
       break;
     }
@@ -470,34 +450,45 @@ function callback(err, msg) {
     case 'wms-vb-blind-position-update': {
       const snr = msg.payload.snr;
       const dev = devices[snr] || {};
+      log.debug('Position update:\n' + JSON.stringify(msg.payload, null, 2));
 
-      if (dev.type === TYPE.LED) {
-        const now = Date.now();
-        if (dev.haControlUntil && now < dev.haControlUntil) return;
-        if (typeof msg.payload.position !== 'undefined') {
-          const brightness = normalizeWaremaBrightness(msg.payload.position);
+      // Für LED: Position = Helligkeit
+      if (dev.type === "28") {
+         const now = Date.now();
+
+         // Wenn HA kürzlich gesteuert hat → ignorieren (Loop-Schutz)
+         if (dev.haControlUntil && now < dev.haControlUntil) {
+           return;
+         }
+
+         // Nur Endzustände von externer Steuerung (Fernbedienung)
+         if (
+           typeof msg.payload.position !== "undefined" &&
+           msg.payload.moving === false
+         ) {
+           const brightness = normalizeWaremaBrightness(msg.payload.position);
+           updateLightState(snr, brightness);
+         }
+         return;
+      } else {
+        // Standard Cover-Handling
+        if (typeof msg.payload.position !== "undefined") {
+          devices[snr].position = msg.payload.position;
+          client.publish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
           if (msg.payload.moving === false) {
-            updateLightState(snr, brightness);
-          } else {
-            clearTimeout(dev.pendingLightFinalize);
-            devices[snr].pendingLightFinalize = setTimeout(() => updateLightState(snr, brightness), LED_FINALIZE_MS);
+            if (msg.payload.position === 0) {
+              client.publish(`warema/${snr}/state`, 'open', { retain: true });
+            } else if (msg.payload.position === 100) {
+              client.publish(`warema/${snr}/state`, 'closed', { retain: true });
+            } else {
+              client.publish(`warema/${snr}/state`, 'stopped', { retain: true });
+            }
           }
         }
-        return;
-      }
-
-      if (typeof msg.payload.position !== 'undefined') {
-        devices[snr].position = msg.payload.position;
-        publish(`warema/${snr}/position`, String(msg.payload.position));
-        if (msg.payload.moving === false) {
-          publish(`warema/${snr}/state`, msg.payload.position === 0 ? 'open' : (msg.payload.position === 100 ? 'closed' : 'stopped'), { retain: true });
-        } else {
-          publish(`warema/${snr}/state`, msg.payload.position > 50 ? 'closing' : 'opening', { retain: false });
+        if (typeof msg.payload.angle !== "undefined") {
+          devices[snr].tilt = msg.payload.tilt;
+          client.publish(`warema/${snr}/tilt`, '' + msg.payload.angle, { retain: true });
         }
-      }
-      if (typeof msg.payload.tilt !== 'undefined') {
-        devices[snr].tilt = msg.payload.tilt;
-        publish(`warema/${snr}/tilt`, String(msg.payload.tilt));
       }
       break;
     }
@@ -506,39 +497,54 @@ function callback(err, msg) {
       log.warn('UNKNOWN MESSAGE: ' + JSON.stringify(msg, null, 2));
   }
 
-  publish('warema/bridge/state', 'online', { retain: true });
-}
-
-/**
- * =========================
- * Weather polling (uses POLLING_INTERVAL)
- * =========================
- */
-function pollWeatherData() {
-  try {
-    const weatherData = stickUsb.getLastWeatherBroadcast();
-    if (weatherData && weatherData.snr) {
-      const weather = { temp: weatherData.temp, wind: weatherData.wind, lumen: weatherData.lumen, rain: weatherData.rain };
-      if (!devices[weatherData.snr]) registerDevice({ snr: weatherData.snr, type: TYPE.WEATHER });
-      addWindSample(weatherData.snr, weatherData.wind);
-      maybePublishWindStats(weatherData.snr);
-      if (shouldPublishWeather(weatherData.snr, weather)) {
-        publish(`warema/${weatherData.snr}/illuminance/state`, weatherData.lumen.toString());
-        publish(`warema/${weatherData.snr}/temperature/state`, weatherData.temp.toString());
-        publish(`warema/${weatherData.snr}/rain/state`, weatherData.rain ? 'ON' : 'OFF');
-        updateWeatherCache(weatherData.snr, weather);
-      }
-    }
-  } catch (error) {
-    log.error('Error polling weather data: ' + error.toString());
+  if (client && client.connected) {
+    client.publish('warema/bridge/state', 'online', { retain: true });
   }
 }
 
-/**
- * =========================
- * Stick & MQTT Setup (preserves original env)
- * =========================
- */
+function updateLightState(snr, brightness) {
+  const v = Math.max(0, Math.min(100, Number(brightness)));
+
+  if (!devices[snr]) devices[snr] = {};
+  devices[snr].type = "28";
+  devices[snr].position = v;
+
+  // Letzte bekannte Helligkeit nur speichern, wenn >0
+  if (v > 0) {
+    devices[snr].lastBrightness = v;
+  }
+
+  if (client && client.connected) {
+    // Helligkeit publizieren
+    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: false });
+
+    // ON/OFF automatisch abhängig von Helligkeit
+    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: false });
+  }
+}
+
+
+function normalizeWaremaBrightness(v) {
+  if (v <= 0) return 0;
+
+  // nächstgelegene bekannte Stufe finden
+  let best = WAREMA_LED_STEPS[0];
+  let diff = Math.abs(v - best);
+
+  for (const s of WAREMA_LED_STEPS) {
+    const d = Math.abs(v - s);
+    if (d < diff) {
+      diff = d;
+      best = s;
+    }
+  }
+  return best;
+}
+
+
+/** =========================
+ *   Stick & MQTT Setup
+ *  ========================= */
 const stickUsb = new warema(
   settingsPar.wmsSerialPort,
   settingsPar.wmsChannel,
@@ -548,162 +554,131 @@ const stickUsb = new warema(
   callback
 );
 
+// Do not attempt connecting to MQTT if trying to discover network parameters
 if (settingsPar.wmsPanid === 'FFFF') {
-  log.info('WMS discovery mode – MQTT disabled');
-  startRawCacheCleaner();
-} else {
-  client = mqtt.connect(mqttServer, {
-    username: process.env.MQTT_USER,
-    password: process.env.MQTT_PASSWORD,
-    protocolVersion: toInt(process.env.MQTT_VERSION, 4),
-    clientId: process.env.MQTT_CLIENTID || undefined,
-    will: { topic: 'warema/bridge/state', payload: 'offline', retain: true, qos: MQTT_QOS }
-  });
-
-  client.on('connect', function () {
-    const topics = [
-      'warema/+/set',
-      'warema/+/set_position',
-      'warema/+/set_tilt',
-      'warema/+/light/set',
-      'warema/+/light/set_brightness'
-    ];
-    client.subscribe(topics, { qos: MQTT_QOS });
-    weatherPollTimer = setInterval(pollWeatherData, pollingInterval);
-    startRawCacheCleaner();
-  });
-
-  client.on('error', function (error) { log.error('MQTT Error: ' + error.toString()); });
-
-  client.on('message', function (topic, message) {
-    const parts = topic.split('/');
-    const snr = parts[1];
-    const command = parts.slice(2).join('/');
-    const dev = devices[snr] || {};
-    message = message.toString();
-
-    switch (command) {
-      case 'set': {
-        const m = message.toUpperCase();
-        if (m === 'CLOSE') {
-          callStickSetPosition(toSnrNum(snr), 100, 0);
-          publish(`warema/${snr}/state`, 'closing', { retain: false });
-        } else if (m === 'CLOSETILT') {
-          callStickSetPosition(toSnrNum(snr), 0, 100);
-          publish(`warema/${snr}/state`, 'closing', { retain: false });
-        } else if (m === 'OPEN' || m === 'OPENTILT') {
-          callStickSetPosition(toSnrNum(snr), 0, 0);
-          publish(`warema/${snr}/state`, 'opening', { retain: false });
-        } else if (m === 'STOP') {
-          try { stickUsb.vnBlindStop(toSnrNum(snr)); } catch {}
-        }
-        break;
-      }
-      case 'set_position':
-        callStickSetPosition(toSnrNum(snr), toInt(message, 0));
-        break;
-      case 'set_tilt':
-        callStickSetPosition(toSnrNum(snr), toInt(devices[snr]?.position ?? 0, 0), toInt(message, 0));
-        break;
-      case 'light/set':
-      case 'light/set_brightness': {
-        let target = 0;
-        if (command === 'light/set') {
-          const m = message.toUpperCase();
-          if (m === 'ON') target = dev.lastBrightness ?? 100;
-          else if (m === 'OFF') target = 0;
-          else target = normalizeWaremaBrightness(toInt(message, 0));
-        } else {
-          target = normalizeWaremaBrightness(toInt(message, 0));
-        }
-        callStickSetPosition(toSnrNum(snr), target, 0, 1);
-        devices[snr] = devices[snr] || {};
-        devices[snr].haControlUntil = Date.now() + 3000;
-        updateLightState(snr, target);
-        break;
-      }
-      default:
-        log.warn('Unrecognised command: ' + command);
-    }
-  });
+  // Discovery-Phase, kein MQTT
+  return;
 }
 
-/**
- * =========================
- * State persistence (optional)
- * =========================
- */
-function saveState() {
-  if (!PERSIST_STATE) return;
-  try {
-    const minimal = {};
-    Object.keys(devices).forEach(snr => {
-      const d = devices[snr];
-      minimal[snr] = { type: d.type, lastBrightness: d.lastBrightness, position: d.position, tilt: d.tilt };
-    });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(minimal, null, 2));
-  } catch (e) { log.error('saveState error: ' + e); }
-}
-
-function loadState() {
-  if (!PERSIST_STATE) return;
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
-      Object.assign(devices, data);
-    }
-  } catch (e) { log.error('loadState error: ' + e); }
-}
-
-loadState();
-
-/**
- * =========================
- * Graceful shutdown
- * =========================
- */
-let shuttingDown = false;
-
-async function shutdown() {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  log.info('Shutdown initiated…');
-
-  try {
-    // MQTT offline melden
-    if (client?.connected) {
-      await new Promise(resolve => {
-        publish('warema/bridge/state', 'offline', { retain: true });
-        client.end(true, {}, resolve); // client.end kann Callback akzeptieren
-      });
-    }
-
-    // Timer stoppen
-    if (weatherPollTimer) {
-      clearInterval(weatherPollTimer);
-      weatherPollTimer = null;
-    }
-    if (rawCacheCleanerTimer) {
-      clearInterval(rawCacheCleanerTimer);
-      rawCacheCleanerTimer = null;
-    }
-
-    // Stick schließen (falls async möglich)
-    if (stickUsb?.close) {
-      await Promise.resolve(stickUsb.close());
-    }
-
-    // State speichern (falls saveState async wird, Promise nutzen)
-    await Promise.resolve(saveState());
-
-    log.info('Shutdown completed successfully.');
-  } catch (e) {
-    log.error('Shutdown error: ' + e);
-  } finally {
-    process.exit(0);
+const client = mqtt.connect(mqttServer, {
+  username: process.env.MQTT_USER,
+  password: process.env.MQTT_PASSWORD,
+  protocolVersion: parseInt(process.env.MQTT_VERSION || '4', 10),
+  clientId: process.env.MQTT_CLIENTID || undefined,
+  will: {
+    topic: 'warema/bridge/state',
+    payload: 'offline',
+    retain: true
   }
-}
+});
 
-process.on('SIGINT', () => shutdown());
-process.on('SIGTERM', () => shutdown());
+client.on('connect', function () {
+  log.info('Connected to MQTT');
+  client.subscribe([
+    'warema/+/set',
+    'warema/+/set_position',
+    'warema/+/set_tilt',
+    // Light-spezifische Steuerung für Typ 28
+    'warema/+/light/set',
+    'warema/+/light/set_brightness'
+  ]);
+
+  // Wetter-Polling starten
+  setInterval(pollWeatherData, pollingInterval);
+  log.info('Started weather data polling every ' + pollingInterval + ' ms');
+});
+
+client.on('error', function (error) {
+  log.error('MQTT Error: ' + error.toString());
+});
+
+client.on('message', function (topic, message) {
+  // const [scope, device, command] = topic.split('/');
+  // const snr = device;
+  
+  const parts = topic.split('/');
+  const scope = parts[0];
+  const device = parts[1];
+  const snr = device;
+  const command = parts.slice(2).join('/');
+  
+  const dev = devices[snr] || {};
+  message = message.toString();
+
+  log.debug(`Received: scope=${scope}, device=${device}, command=${command}, payload=${message}`);
+
+  switch (command) {
+    // ======= Cover / allgemeine Geräte =======
+    case 'set':
+      switch (message) {
+        case 'ON':
+        case 'OFF':
+          // (Platzhalter) Steckdosen etc.; hier keine LED-Logik
+          break;
+        case 'CLOSE':
+          stickUsb.vnBlindSetPosition(snr, 100, 0);
+          client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+          break;
+        case 'CLOSETILT':
+          stickUsb.vnBlindSetPosition(snr, 0, 100);
+          client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+          break;
+        case 'OPEN':
+        case 'OPENTILT':
+          stickUsb.vnBlindSetPosition(snr, 0, 0);
+          client.publish(`warema/${snr}/state`, 'opening', { retain: false });
+          break;
+        case 'STOP':
+          stickUsb.vnBlindStop(snr);
+          break;
+        default:
+          log.warn('Unrecognised set payload: ' + message);
+      }
+      break;
+
+    case 'set_position':
+      log.debug('Setting ' + snr + ' to ' + message);
+      stickUsb.vnBlindSetPosition(snr, parseInt(message, 10));
+      break;
+
+    case 'set_tilt':
+      log.debug('Setting ' + snr + ' tilt to ' + message + '°, position ' + (devices[snr] ? devices[snr].position : '?'));
+      stickUsb.vnBlindSetPosition(snr, parseInt(devices[snr]?.position ?? 0, 10), parseInt(message, 10));
+      break;
+
+    // ======= LED / Light (Typ 28) =======
+    case 'light.set': // defensiv, falls Broker Subtopic anders zusammensetzt
+      // nichts
+      break;
+
+    /** =========================
+     *   LED / Light Handler
+     *  ========================= */
+    case 'light/set':
+    case 'light/set_brightness': {
+      let target = 0;
+
+      if (command === 'light/set') {
+        if (message.toUpperCase() === 'ON') {
+          target = dev.lastBrightness ?? 100;
+        } else if (message.toUpperCase() === 'OFF') {
+          target = 0;
+        }
+      } else {
+        const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
+        target = normalizeWaremaBrightness(haValue);
+      }
+
+      stickUsb.vnBlindSetPosition(snr, target, 0);
+
+      devices[snr].haControlUntil = Date.now() + 3000;
+	  
+      // nur lokal merken, NICHT als Feedbackschleife
+      updateLightState(snr, target);
+      break;
+    }
+
+    default:
+      log.warn('Unrecognised command: ' + command);
+  }
+});
