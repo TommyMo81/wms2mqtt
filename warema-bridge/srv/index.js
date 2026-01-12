@@ -4,16 +4,10 @@
 const warema = require('./warema-wms-venetian-blinds');
 const log = require('./logger');
 const mqtt = require('mqtt');
-const fs = require('fs');
 
-const toInt = (val, def) => {
-  const n = Number(val);
-  return Number.isFinite(n) ? n : def;
-};
-const toBool = (val, def=false) => {
-  if (val === undefined) return def;
-  return ['1','true','TRUE','yes','YES','on','ON'].includes(String(val));
-};
+process.on('SIGINT', function () {
+  process.exit(0);
+});
 
 /** =========================
  *   ENV / Defaults
@@ -44,9 +38,6 @@ const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const windStats = new Map();        // SNR -> { samples: [{t, v}], lastPublish }
 
 const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
-
-const PERSIST_STATE = toBool(process.env.PERSIST_STATE, true);
-const STATE_FILE = process.env.STATE_FILE || 'devices-state.json';
 
 /** =========================
  *   Helpers
@@ -691,83 +682,3 @@ client.on('message', function (topic, message) {
       log.warn('Unrecognised command: ' + command);
   }
 });
-
-/**
- * =========================
- * State persistence (optional)
- * =========================
- */
-function saveState() {
-  if (!PERSIST_STATE) return;
-  try {
-    const minimal = {};
-    Object.keys(devices).forEach(snr => {
-      const d = devices[snr];
-      minimal[snr] = { type: d.type, lastBrightness: d.lastBrightness, position: d.position, tilt: d.tilt };
-    });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(minimal, null, 2));
-  } catch (e) { log.error('saveState error: ' + e); }
-}
-
-function loadState() {
-  if (!PERSIST_STATE) return;
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
-      Object.assign(devices, data);
-    }
-  } catch (e) { log.error('loadState error: ' + e); }
-}
-
-loadState();
-
-/**
- * =========================
- * Graceful shutdown
- * =========================
- */
-let shuttingDown = false;
-
-async function shutdown() {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  log.info('Shutdown initiated…');
-
-  try {
-    // MQTT offline melden
-    if (client?.connected) {
-      await new Promise(resolve => {
-        publish('warema/bridge/state', 'offline', { retain: true });
-        client.end(true, {}, resolve); // client.end kann Callback akzeptieren
-      });
-    }
-
-    // Timer stoppen
-    if (weatherPollTimer) {
-      clearInterval(weatherPollTimer);
-      weatherPollTimer = null;
-    }
-    if (rawCacheCleanerTimer) {
-      clearInterval(rawCacheCleanerTimer);
-      rawCacheCleanerTimer = null;
-    }
-
-    // Stick schließen (falls async möglich)
-    if (stickUsb?.close) {
-      await Promise.resolve(stickUsb.close());
-    }
-
-    // State speichern (falls saveState async wird, Promise nutzen)
-    await Promise.resolve(saveState());
-
-    log.info('Shutdown completed successfully.');
-  } catch (e) {
-    log.error('Shutdown error: ' + e);
-  } finally {
-    process.exit(0);
-  }
-}
-
-process.on('SIGINT', () => shutdown());
-process.on('SIGTERM', () => shutdown());
