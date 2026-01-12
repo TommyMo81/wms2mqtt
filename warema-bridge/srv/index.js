@@ -6,6 +6,14 @@ const log = require('./logger');
 const mqtt = require('mqtt');
 const fs = require('fs');
 
+const toInt = (val, def) => {
+  const n = Number(val);
+  return Number.isFinite(n) ? n : def;
+};
+const toBool = (val, def=false) => {
+  if (val === undefined) return def;
+  return ['1','true','TRUE','yes','YES','on','ON'].includes(String(val));
+};
 
 /** =========================
  *   ENV / Defaults
