@@ -592,7 +592,7 @@ const client = mqtt.connect(mqttServer, {
   password: process.env.MQTT_PASSWORD,
   protocolVersion: parseInt(process.env.MQTT_VERSION || '4', 10),
   clientId: process.env.MQTT_CLIENTID || undefined,
-  clean: false, // WICHTIG
+  clean: true,
   will: {
     topic: 'warema/bridge/state',
     payload: 'offline',
