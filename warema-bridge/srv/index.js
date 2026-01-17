@@ -6,6 +6,9 @@ const log = require('./logger');
 const mqtt = require('mqtt');
 
 process.on('SIGINT', function () {
+  if (client?.connected) {
+    client.publish('warema/bridge/state', 'offline', { retain: true });
+  }
   process.exit(0);
 });
 
@@ -38,6 +41,8 @@ const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const windStats = new Map();        // SNR -> { samples: [{t, v}], lastPublish }
 
 const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
+
+let weatherPollingStarted = false;
 
 /** =========================
  *   Helpers
@@ -384,8 +389,12 @@ function callback(err, msg) {
       log.info('Warema init completed');
       stickUsb.setPosUpdInterval(pollingInterval);
       stickUsb.setWatchMovingBlindsInterval(movingInterval);
-      log.info('Scanning...');
-      stickUsb.scanDevices({ autoAssignBlinds: false });
+	  
+      setTimeout(() => {
+        log.info('Rescanning devices after init');
+        stickUsb.scanDevices({ autoAssignBlinds: false });
+      }, 2000);
+	  
       break;
 
     case 'wms-vb-scanned-devices':
@@ -541,6 +550,24 @@ function normalizeWaremaBrightness(v) {
   return best;
 }
 
+function restoreAfterMqttReconnect() {
+  log.info('Restoring devices after MQTT reconnect');
+
+  // Bridge online
+  client.publish('warema/bridge/state', 'online', { retain: true });
+
+  // Alle bekannten Devices erneut announcen
+  Object.entries(devices).forEach(([snr, dev]) => {
+    if (!dev.type) return;
+
+    registerDevice({ snr, type: dev.type });
+
+    client.publish(`warema/${snr}/availability`, 'online', {
+      retain: true
+    });
+  });
+}
+
 
 /** =========================
  *   Stick & MQTT Setup
@@ -565,6 +592,7 @@ const client = mqtt.connect(mqttServer, {
   password: process.env.MQTT_PASSWORD,
   protocolVersion: parseInt(process.env.MQTT_VERSION || '4', 10),
   clientId: process.env.MQTT_CLIENTID || undefined,
+  clean: false, // WICHTIG
   will: {
     topic: 'warema/bridge/state',
     payload: 'offline',
@@ -582,14 +610,27 @@ client.on('connect', function () {
     'warema/+/light/set',
     'warema/+/light/set_brightness'
   ]);
+  
+  restoreAfterMqttReconnect();
 
-  // Wetter-Polling starten
-  setInterval(pollWeatherData, pollingInterval);
-  log.info('Started weather data polling every ' + pollingInterval + ' ms');
+  if (!weatherPollingStarted) {
+    // Wetter-Polling starten
+    setInterval(pollWeatherData, pollingInterval);
+	weatherPollingStarted = true;
+    log.info('Started weather data polling every ' + pollingInterval + ' ms');
+  }
 });
 
 client.on('error', function (error) {
   log.error('MQTT Error: ' + error.toString());
+});
+
+client.on('reconnect', () => {
+  log.warn('MQTT reconnecting...');
+});
+
+client.on('offline', () => {
+  log.warn('MQTT offline');
 });
 
 client.on('message', function (topic, message) {
