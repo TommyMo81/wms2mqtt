@@ -93,19 +93,15 @@ function restoreDeviceState(snr) {
   const dev = devices[snr];
   if (!dev || !client || !client.connected) return;
 
-  // ==== LED (Typ 28) ====
-  if (dev.type === "28") {
-    client.publish(`warema/${snr}/light/brightness`, String(dev.lastBrightness ?? 0), { retain: true });
-    client.publish(`warema/${snr}/light/state`, dev.isOn ? 'ON' : 'OFF', { retain: true });
-  }
-
   // ==== Covers / Aktoren ====
-  else if (dev.position !== undefined && dev.positionFromStick) {
+  if (dev.position !== undefined && dev.positionFromStick) {
     // Nur echten Stickwert veröffentlichen
     client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
-    const state = dev.position === 0 ? 'open' :
-                  dev.position === 100 ? 'closed' : 'stopped';
-    client.publish(`warema/${snr}/state`, state, { retain: true });
+    const state =
+      dev.position === 0 ? 'open' :
+      dev.position === 100 ? 'closed' : 'stopped';
+	  
+    client.publish(`warema/${snr}/state`, state, { retain: false });
 
     if (dev.tilt !== undefined) {
       client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
@@ -340,7 +336,7 @@ function registerDevice(element) {
       // LED initialisieren
       devices[element.snr] = {
         type: element.type,
-        lastBrightness: devices[element.snr]?.lastBrightness ?? 100,
+        lastBrightness: devices[element.snr]?.lastBrightness ?? 0,
         isOn: devices[element.snr]?.isOn ?? true,
         position: 0
       };
@@ -507,9 +503,9 @@ function callback(err, msg) {
          const now = Date.now();
 
          // Wenn HA kürzlich gesteuert hat → ignorieren (Loop-Schutz)
-         if (dev.haControlUntil && now < dev.haControlUntil) {
-           return;
-         }
+         //if (dev.haControlUntil && now < dev.haControlUntil) {
+         //  return;
+         //}
 
          // Nur Endzustände von externer Steuerung (Fernbedienung)
          if (
@@ -517,24 +513,35 @@ function callback(err, msg) {
            msg.payload.moving === false
          ) {
            const brightness = normalizeWaremaBrightness(msg.payload.position);
-           updateLightState(snr, brightness, false);
+           // Stick ist führend
+           if (brightness > 0) {
+             devices[snr].lastBrightness = brightness;
+           }
+           updateLightState(snr, brightness, true);
          }
          return;
       } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
           dev.position = msg.payload.position;
-          dev.positionFromStick = true;  // Stick liefert echten Wert
+		  dev.positionFromStick = true;
+		  
           client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
+          let state;
+          if (msg.payload.moving === true) {
+            state = dev.position > (dev.lastPosition ?? 0) ? 'closing' : 'opening';
+          } else {
+            state =
+              dev.position === 0 ? 'open' :
+              dev.position === 100 ? 'closed' : 'stopped';
+          }
 
-          const state = dev.position === 0 ? 'open' :
-                  dev.position === 100 ? 'closed' : 'stopped';
-          client.publish(`warema/${snr}/state`, state, { retain: true });
+          client.publish(`warema/${snr}/state`, state, { retain: false });
+          dev.lastPosition = dev.position;
         }
-
         if (typeof msg.payload.angle !== "undefined") {
-          dev.tilt = msg.payload.angle;
-          client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
+          devices[snr].tilt = msg.payload.tilt;
+          client.publish(`warema/${snr}/tilt`, '' + msg.payload.angle, { retain: true });
         }
       }
       break;
@@ -557,7 +564,9 @@ function updateLightState(snr, brightness, retain = false) {
   devices[snr].position = v;
 
   // Letzte bekannte Helligkeit nur speichern, wenn >0
-  if (v > 0) devices[snr].lastBrightness = v;
+  if (v > 0) {
+	devices[snr].lastBrightness = v;
+  }
 
   if (client && client.connected) {
     // Helligkeit publizieren
