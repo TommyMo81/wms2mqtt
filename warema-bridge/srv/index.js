@@ -337,8 +337,8 @@ function registerDevice(element) {
       // LED initialisieren
       devices[element.snr] = {
         type: element.type,
-        lastBrightness: devices[element.snr]?.lastBrightness ?? 0,
-        isOn: devices[element.snr]?.isOn ?? true,
+        lastBrightness: devices[element.snr]?.lastBrightness ?? 100,
+        isOn: devices[element.snr]?.isOn ?? false,
         position: 0
       };
       break;
@@ -728,6 +728,7 @@ client.on('message', function (topic, message) {
       if (command === 'light/set') {
         if (message.toUpperCase() === 'ON') {
           target = dev.lastBrightness ?? 100;
+		  updateLightState(snr, target, true); // <-- WICHTIG
         } else if (message.toUpperCase() === 'OFF') {
           target = 0;
         }
