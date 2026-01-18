@@ -18,9 +18,9 @@ const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split
 const pollingInterval = parseInt(process.env.POLLING_INTERVAL || '30000', 10);
 const movingInterval = parseInt(process.env.MOVING_INTERVAL || '1000', 10);
 
-// Wind-Aggregation (leserliche Statistik)
-const WIND_AGG_WINDOW_MS = parseInt(process.env.WIND_AGG_WINDOW_MS || '60000', 10);        // Fenster: 60s
-const WIND_PUBLISH_INTERVAL_MS = parseInt(process.env.WIND_PUBLISH_INTERVAL_MS || '60000', 10); // Publizieren: 60s
+/ Weather EMA Aggregation (für Statistik)
+const WEATHER_EMA_ALPHA = parseFloat(process.env.WEATHER_EMA_ALPHA || '0.2');
+const WEATHER_PUBLISH_INTERVAL_MS = parseInt(process.env.WEATHER_PUBLISH_INTERVAL_MS || '60000', 10);
 
 const settingsPar = {
   wmsChannel: parseInt(process.env.WMS_CHANNEL || '17', 10),
@@ -35,7 +35,7 @@ const settingsPar = {
 const devices = {};                 // Map von SNR -> { type, position, tilt, lastBrightness }
 const weatherCache = new Map();     // Cache für Weather-Dedup
 const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
-const windStats = new Map();        // SNR -> { samples: [{t, v}], lastPublish }
+const weatherStats = new Map();     // SNR -> { wind, temp, lumen, lastPublish }
 
 const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
 
@@ -65,40 +65,38 @@ function isDuplicateRawMessage(stickCmd, snr) {
   return false;
 }
 
-// Wind: Sample hinzufügen und altes aus Fenster entfernen
-function addWindSample(snr, windValue) {
-  const now = Date.now();
-  let entry = windStats.get(snr);
-  if (!entry) {
-    entry = { samples: [], lastPublish: 0 };
-    windStats.set(snr, entry);
-  }
-  entry.samples.push({ t: now, v: Number(windValue) });
-  // Fenster säubern
-  entry.samples = entry.samples.filter(s => (now - s.t) <= WIND_AGG_WINDOW_MS);
+function updateEMA(oldValue, newValue) {
+  if (oldValue === undefined || oldValue === null) return Number(newValue);
+  return oldValue + WEATHER_EMA_ALPHA * (Number(newValue) - oldValue);
 }
 
-// Wind: ggf. Durchschnitt publizieren
-function maybePublishWindAverage(snr) {
-  const entry = windStats.get(snr);
+function updateWeatherEMA(snr, data) {
   const now = Date.now();
-  if (!entry) return;
-  if ((now - entry.lastPublish) < WIND_PUBLISH_INTERVAL_MS) return;
+  let entry = weatherStats.get(snr);
+  if (!entry) {
+    entry = { wind: null, temp: null, lumen: null, lastPublish: 0 };
+    weatherStats.set(snr, entry);
+  }
 
-  const samples = entry.samples;
-  if (!samples.length) return;
+  if (data.wind !== undefined) entry.wind = updateEMA(entry.wind, data.wind);
+  if (data.temp !== undefined) entry.temp = updateEMA(entry.temp, data.temp);
+  if (data.lumen !== undefined) entry.lumen = updateEMA(entry.lumen, data.lumen);
 
-  const avg = samples.reduce((acc, s) => acc + s.v, 0) / samples.length;
-  const rounded = Math.round(avg * 10) / 10; // eine Nachkommastelle
+  if ((now - entry.lastPublish) < WEATHER_PUBLISH_INTERVAL_MS) return;
 
   if (client && client.connected) {
-    client.publish(`warema/${snr}/wind/state`, rounded.toString(), { retain: true });
+    if (entry.wind !== null)
+      client.publish(`warema/${snr}/wind/state`, entry.wind.toFixed(1), { retain: true });
+    if (entry.temp !== null)
+      client.publish(`warema/${snr}/temperature/state`, entry.temp.toFixed(1), { retain: true });
+    if (entry.lumen !== null)
+      client.publish(`warema/${snr}/illuminance/state`, Math.round(entry.lumen).toString(), { retain: true });
+
     entry.lastPublish = now;
-    log.debug(`Published averaged wind ${rounded} m/s for ${snr}`);
-  } else {
-    log.warn(`MQTT client not connected, skipping averaged wind publish for ${snr}`);
+    log.debug(`Published EMA weather for ${snr}`);
   }
 }
+
 
 /** =========================
  *   Weather polling
@@ -123,15 +121,14 @@ function pollWeatherData() {
         registerDevice({ snr: weatherData.snr, type: "63" });
       }
 
-      // Wind immer sammeln; Veröffentlichung zeitgesteuert
-      addWindSample(weatherData.snr, weatherData.wind);
-      maybePublishWindAverage(weatherData.snr);
+      updateWeatherEMA(weatherData.snr, {
+        wind: weatherData.wind,
+        temp: weatherData.temp,
+        lumen: weatherData.lumen
+      });
 
       if (shouldSend) {
         if (client && client.connected) {
-          client.publish(`warema/${weatherData.snr}/illuminance/state`, weatherData.lumen.toString(), { retain: true });
-          client.publish(`warema/${weatherData.snr}/temperature/state`, weatherData.temp.toString(), { retain: true });
-          // Wind wird durch Aggregator veröffentlicht
           client.publish(`warema/${weatherData.snr}/rain/state`, weatherData.rain ? 'ON' : 'OFF', { retain: true });
         } else {
           log.warn(`MQTT client not connected, skipping weather data publish for ${weatherKey}`);
@@ -415,9 +412,11 @@ function callback(err, msg) {
         registerDevice({ snr: w.snr, type: "63" });
       }
 
-      // Wind immer in Aggregator
-      addWindSample(w.snr, w.wind);
-      maybePublishWindAverage(w.snr);
+      updateWeatherEMA(w.snr, {
+        wind: w.wind,
+        temp: w.temp,
+        lumen: w.lumen
+      });
 
       // Dedup Hash für die restlichen Werte
       const weatherKey = w.snr;
@@ -433,9 +432,6 @@ function callback(err, msg) {
 
       if (shouldSend) {
         if (client && client.connected) {
-          client.publish(`warema/${w.snr}/illuminance/state`, w.lumen.toString(), { retain: true });
-          client.publish(`warema/${w.snr}/temperature/state`, w.temp.toString(), { retain: true });
-          // Wind: wird über Aggregator gesendet
           client.publish(`warema/${w.snr}/rain/state`, w.rain ? 'ON' : 'OFF', { retain: true });
         } else {
           log.warn('MQTT client not connected, skipping weather data publish for ' + weatherKey);
