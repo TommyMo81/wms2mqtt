@@ -90,25 +90,6 @@ function saveDeviceCache() {
   } catch {}
 }
 
-function restoreDeviceState(snr) {
-  const dev = devices[snr];
-  if (!dev || !client || !client.connected) return;
-
-  // ==== Covers / Aktoren ====
-  if (dev.position !== undefined && dev.positionFromStick) {
-    // Nur echten Stickwert veröffentlichen
-    client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
-    const state =
-      dev.position === 0 ? 'open' :
-      dev.position === 100 ? 'closed' : 'stopped';
-	  
-    client.publish(`warema/${snr}/state`, state, { retain: false });
-
-    if (dev.tilt !== undefined) {
-      client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
-    }
-  }
-}
 
 /**
  * Publiziert minimale Initial-States, damit Home Assistant
@@ -434,7 +415,6 @@ function registerDevice(element) {
   // Device cache speichern (nur LED relevant)
   if (element.type === "28") {
 	  saveDeviceCache();
-	  restoreDeviceState(element.snr);
   }
 }
 
