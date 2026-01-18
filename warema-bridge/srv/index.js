@@ -93,33 +93,25 @@ function restoreDeviceState(snr) {
   const dev = devices[snr];
   if (!dev || !client || !client.connected) return;
 
-  switch (dev.type) {
+  // ==== LED (Typ 28) ====
+  if (dev.type === "28") {
+    client.publish(`warema/${snr}/light/brightness`, String(dev.lastBrightness ?? 0), { retain: true });
+    client.publish(`warema/${snr}/light/state`, dev.isOn ? 'ON' : 'OFF', { retain: true });
+  }
 
-    // === LED ===
-    case "28":
-      // Nur HA informieren, nicht die Hardware bewegen
-      client.publish(`warema/${snr}/light/brightness`, String(dev.lastBrightness ?? 0), { retain: true });
-      client.publish(`warema/${snr}/light/state`, dev.isOn ? 'ON' : 'OFF', { retain: true });
-      break;
+  // ==== Covers / Aktoren ====
+  else if (dev.position !== undefined && dev.positionFromStick) {
+    // Nur echten Stickwert veröffentlichen
+    client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
+    const state = dev.position === 0 ? 'open' :
+                  dev.position === 100 ? 'closed' : 'stopped';
+    client.publish(`warema/${snr}/state`, state, { retain: true });
 
-    // === Covers / Lamellendach / Markise ===
-    default:
-      if (dev.position !== undefined) {
-        // Aktuellen physischen Zustand in HA veröffentlichen
-        client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
-
-        const state = dev.position === 0 ? 'open' :
-                      dev.position === 100 ? 'closed' : 'stopped';
-        client.publish(`warema/${snr}/state`, state, { retain: true });
-
-        if (dev.tilt !== undefined) {
-          client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
-        }
-      }
-      break;
+    if (dev.tilt !== undefined) {
+      client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
+    }
   }
 }
-
 
 
 // Prüft duplizierte Rohmeldung vom Stick
@@ -350,7 +342,7 @@ function registerDevice(element) {
         type: element.type,
         lastBrightness: devices[element.snr]?.lastBrightness ?? 100,
         isOn: devices[element.snr]?.isOn ?? true,
-        position: 0 // Position = Brightness
+        position: 0
       };
       break;
     }
@@ -387,8 +379,8 @@ function registerDevice(element) {
       // Cover initialisieren (physikalische Position/Tilt wird später von Stick gemeldet)
       devices[element.snr] = {
         type: element.type,
-        position: 0,
-        tilt: 0
+        position: undefined,
+        tilt: undefined
       };
       break;
     }
@@ -414,13 +406,13 @@ function registerDevice(element) {
   }
 
   // Discovery publizieren
-  if (topicForDiscovery) client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
+  if (topicForDiscovery && payload) client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
 
   // Device cache speichern (nur LED relevant)
-  if (element.type === "28") saveDeviceCache();
-
-  // Zustand in HA wiederherstellen
-  restoreDeviceState(element.snr);
+  if (element.type === "28") {
+	  saveDeviceCache();
+	  restoreDeviceState(element.snr);
+  }
 }
 
 function initStick() {
@@ -507,6 +499,7 @@ function callback(err, msg) {
     case 'wms-vb-blind-position-update': {
       const snr = msg.payload.snr;
       const dev = devices[snr] || {};
+	  if (!dev) break;
       log.debug('Position update:\n' + JSON.stringify(msg.payload, null, 2));
 
       // Für LED: Position = Helligkeit
@@ -530,21 +523,18 @@ function callback(err, msg) {
       } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
-          devices[snr].position = msg.payload.position;
-          client.publish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
-          if (msg.payload.moving === false) {
-            if (msg.payload.position === 0) {
-              client.publish(`warema/${snr}/state`, 'open', { retain: true });
-            } else if (msg.payload.position === 100) {
-              client.publish(`warema/${snr}/state`, 'closed', { retain: true });
-            } else {
-              client.publish(`warema/${snr}/state`, 'stopped', { retain: true });
-            }
-          }
+          dev.position = msg.payload.position;
+          dev.positionFromStick = true;  // Stick liefert echten Wert
+          client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
+
+          const state = dev.position === 0 ? 'open' :
+                  dev.position === 100 ? 'closed' : 'stopped';
+          client.publish(`warema/${snr}/state`, state, { retain: true });
         }
+
         if (typeof msg.payload.angle !== "undefined") {
-          devices[snr].tilt = msg.payload.tilt;
-          client.publish(`warema/${snr}/tilt`, '' + msg.payload.angle, { retain: true });
+          dev.tilt = msg.payload.angle;
+          client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
         }
       }
       break;
