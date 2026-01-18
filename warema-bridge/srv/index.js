@@ -102,38 +102,26 @@ function publishInitialState(snr, type) {
   if (!dev) return;
 
   switch (type) {
-    // ======= LED / Light =======
-    case "28": {
-      // Wenn keine gespeicherte Helligkeit vorhanden → LED aus
+    case "28": { // LED
       const brightness = dev.lastBrightness ?? 0;
       const isOn = brightness > 0;
-
       client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: true });
       client.publish(`warema/${snr}/light/state`, isOn ? 'ON' : 'OFF', { retain: true });
       break;
     }
-
-    // ======= Cover / Aktoren =======
-    case "21": case "25": case "2A": case "20": case "24": {
-      // Position nur publizieren, wenn vom Stick bekannt
-      if (typeof dev.position === 'number') {
+    case "21": case "25": case "2A": case "20": case "24": { // Cover
+      if (dev.position !== undefined) {
         client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
-        let state;
-        if (dev.position === 0) state = 'open';
-        else if (dev.position === 100) state = 'closed';
-        else state = 'stopped';
+        const state = dev.position === 0 ? 'open' :
+                      dev.position === 100 ? 'closed' : 'stopped';
         client.publish(`warema/${snr}/state`, state, { retain: true });
       }
-
-      // Tilt nur publizieren, wenn vom Stick bekannt
-      if (typeof dev.tilt === 'number') {
+      if (dev.tilt !== undefined) {
         client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
       }
       break;
     }
-
-    // ======= Wetterstation =======
-    case "63": {
+    case "63": { // Wetterstation bleibt gleich
       const w = weatherStats.get(snr) || {};
       if (w.lumen !== undefined) client.publish(`warema/${snr}/illuminance/state`, Math.round(w.lumen).toString(), { retain: true });
       if (w.temp  !== undefined) client.publish(`warema/${snr}/temperature/state`, w.temp.toFixed(1), { retain: true });
@@ -141,11 +129,9 @@ function publishInitialState(snr, type) {
       if (w.rain  !== undefined) client.publish(`warema/${snr}/rain/state`, w.rain ? 'ON' : 'OFF', { retain: true });
       break;
     }
-
-    default:
-      log.warn('publishInitialState: Unrecognized device type: ' + type);
   }
 }
+
 
 
 
