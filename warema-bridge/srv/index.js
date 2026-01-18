@@ -92,29 +92,54 @@ function saveDeviceCache() {
 
 
 /**
- * Publiziert minimale Initial-States, damit Home Assistant
- * MQTT-Entities nicht im Status "unknown" bleiben.
- * KEINE geratenen physikalischen Zustände!
+ * Publiziert den initialen Zustand eines Geräts direkt nach der Registrierung / Availability.
+ * @param {string} snr - Seriennummer / ID des Geräts
+ * @param {string} type - Gerätetyp ("28"=LED, "21/25/2A/20/24"=Cover, "63"=Wetterstation)
  */
 function publishInitialState(snr, type) {
   if (!client || !client.connected) return;
+  const dev = devices[snr];
+  if (!dev) return;
 
-  // ---- Covers / Aktoren ----
-  if (["21", "25", "2A", "20", "24"].includes(type)) {
-    client.publish(`warema/${snr}/state`, 'stopped', { retain: false });
-    return;
+  switch (type) {
+    // ======= LED / Light =======
+    case "28": {
+      const brightness = dev.lastBrightness ?? 100;
+      const isOn = brightness > 0;
+      client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: true });
+      client.publish(`warema/${snr}/light/state`, isOn ? 'ON' : 'OFF', { retain: true });
+      break;
+    }
+
+    // ======= Cover / Aktoren =======
+    case "21": case "25": case "2A": case "20": case "24": {
+      if (dev.position !== undefined) {
+        client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
+        const state = dev.position === 0 ? 'open' :
+                      dev.position === 100 ? 'closed' : 'stopped';
+        client.publish(`warema/${snr}/state`, state, { retain: true });
+      }
+      if (dev.tilt !== undefined) {
+        client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
+      }
+      break;
+    }
+
+    // ======= Wetterstation =======
+    case "63": {
+      const w = weatherStats.get(snr) || {};
+      if (w.lumen !== undefined) client.publish(`warema/${snr}/illuminance/state`, Math.round(w.lumen).toString(), { retain: true });
+      if (w.temp  !== undefined) client.publish(`warema/${snr}/temperature/state`, w.temp.toFixed(1), { retain: true });
+      if (w.wind  !== undefined) client.publish(`warema/${snr}/wind/state`, w.wind.toFixed(1), { retain: true });
+      if (w.rain  !== undefined) client.publish(`warema/${snr}/rain/state`, w.rain ? 'ON' : 'OFF', { retain: true });
+      break;
+    }
+
+    default:
+      log.warn('publishInitialState: Unrecognized device type: ' + type);
   }
-
-  // ---- LED (Typ 28) ----
-  if (type === "28") {
-    client.publish(`warema/${snr}/light/state`, 'OFF', { retain: false });
-    client.publish(`warema/${snr}/light/brightness`, '0', { retain: false });
-    return;
-  }
-
-  // ---- Wetterstation (Typ 63) ----
-  // Kein Initial-State notwendig
 }
+
 
 // Prüft duplizierte Rohmeldung vom Stick
 function isDuplicateRawMessage(stickCmd, snr) {
