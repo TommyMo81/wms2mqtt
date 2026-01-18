@@ -18,7 +18,7 @@ let weatherInterval = null;
 const mqttServer = process.env.MQTT_SERVER || 'mqtt://localhost';
 const ignoredDevices = process.env.IGNORED_DEVICES ? process.env.IGNORED_DEVICES.split(',') : [];
 const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split(',') : [];
-const devicePollingInterval = parseInt(process.env.DEVICE_POLLING_INTERVAL || '2000', 10);
+const devicePollingInterval = parseInt(process.env.DEVICE_POLLING_INTERVAL || '30000', 10);
 const weatherPollingInterval = parseInt(process.env.WEATHER_POLLING_INTERVAL || '30000', 10);
 const movingInterval = parseInt(process.env.MOVING_INTERVAL || '2000', 10);
 
