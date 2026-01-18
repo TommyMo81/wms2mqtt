@@ -18,7 +18,7 @@ const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split
 const pollingInterval = parseInt(process.env.POLLING_INTERVAL || '30000', 10);
 const movingInterval = parseInt(process.env.MOVING_INTERVAL || '1000', 10);
 
-/ Weather EMA Aggregation (für Statistik)
+// Weather EMA Aggregation (für Statistik)
 const WEATHER_EMA_ALPHA = parseFloat(process.env.WEATHER_EMA_ALPHA || '0.2');
 const WEATHER_PUBLISH_INTERVAL_MS = parseInt(process.env.WEATHER_PUBLISH_INTERVAL_MS || '60000', 10);
 
