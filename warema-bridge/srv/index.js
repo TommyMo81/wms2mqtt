@@ -89,6 +89,25 @@ function saveDeviceCache() {
   } catch {}
 }
 
+function restoreDeviceState(snr) {
+  const dev = devices[snr];
+  if (!dev || !client || !client.connected) return;
+
+  // LED (Typ 28)
+  if (dev.type === "28") {
+    const brightness = dev.lastBrightness ?? 0;
+    client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: false });
+    client.publish(`warema/${snr}/light/state`, brightness > 0 ? 'ON' : 'OFF', { retain: false });
+  }
+  // Cover / Aktoren können analog mit position/state gemacht werden
+  else if (dev.position !== undefined) {
+    client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
+    const state = dev.position === 0 ? 'open' : dev.position === 100 ? 'closed' : 'stopped';
+    client.publish(`warema/${snr}/state`, state, { retain: true });
+  }
+}
+
+
 // Prüft duplizierte Rohmeldung vom Stick
 function isDuplicateRawMessage(stickCmd, snr) {
   const currentTime = Date.now();
@@ -423,7 +442,7 @@ function registerDevice(element) {
   if (element.type !== "63") {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
   }
-  devices[element.snr] = { type: element.type, lastBrightness: 100 };
+  devices[element.snr] = { type: element.type, lastBrightness: 100, position: devices[element.snr]?.position ?? 0, tilt: devices[element.snr]?.tilt ?? 0 };
 
   // Availability online setzen
   if (client && client.connected) {
@@ -432,9 +451,12 @@ function registerDevice(element) {
 
   // Discovery publizieren
   client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
-  
-  // Persist device cache
+
+  // ===== Persist device cache =====
   saveDeviceCache();
+
+  // ===== Restore device state for HA after restart =====
+  restoreDeviceState(element.snr);
 }
 
 function initStick() {
