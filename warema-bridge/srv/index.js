@@ -18,8 +18,9 @@ let weatherInterval = null;
 const mqttServer = process.env.MQTT_SERVER || 'mqtt://localhost';
 const ignoredDevices = process.env.IGNORED_DEVICES ? process.env.IGNORED_DEVICES.split(',') : [];
 const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split(',') : [];
-const pollingInterval = parseInt(process.env.POLLING_INTERVAL || '30000', 10);
-const movingInterval = parseInt(process.env.MOVING_INTERVAL || '1000', 10);
+const devicePollingInterval = parseInt(process.env.DEVICE_POLLING_INTERVAL || '2000', 10);
+const weatherPollingInterval = parseInt(process.env.WEATHER_POLLING_INTERVAL || '30000', 10);
+const movingInterval = parseInt(process.env.MOVING_INTERVAL || '2000', 10);
 
 // Weather EMA Aggregation (für Statistik)
 const WEATHER_EMA_ALPHA = parseFloat(process.env.WEATHER_EMA_ALPHA || '0.2');
@@ -415,7 +416,7 @@ function initStick() {
   log.info('Initializing WMS stick...');
   stickReady = false;
 
-  stickUsb.setPosUpdInterval(pollingInterval);
+  stickUsb.setPosUpdInterval(devicePollingInterval);
   stickUsb.setWatchMovingBlindsInterval(movingInterval);
 
   // Explizit scannen
@@ -643,7 +644,7 @@ client.on('connect', function () {
 
   // Wetter-Polling starten
   if (!weatherInterval) {
-    weatherInterval = setInterval(pollWeatherData, pollingInterval);
+    weatherInterval = setInterval(pollWeatherData, weatherPollingInterval);
   }
 
   tryFullRebind();
