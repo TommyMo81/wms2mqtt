@@ -110,6 +110,30 @@ function restoreDeviceState(snr) {
   }
 }
 
+/**
+ * Publiziert minimale Initial-States, damit Home Assistant
+ * MQTT-Entities nicht im Status "unknown" bleiben.
+ * KEINE geratenen physikalischen Zustände!
+ */
+function publishInitialState(snr, type) {
+  if (!client || !client.connected) return;
+
+  // ---- Covers / Aktoren ----
+  if (["21", "25", "2A", "20", "24"].includes(type)) {
+    client.publish(`warema/${snr}/state`, 'stopped', { retain: false });
+    return;
+  }
+
+  // ---- LED (Typ 28) ----
+  if (type === "28") {
+    client.publish(`warema/${snr}/light/state`, 'OFF', { retain: false });
+    client.publish(`warema/${snr}/light/brightness`, '0', { retain: false });
+    return;
+  }
+
+  // ---- Wetterstation (Typ 63) ----
+  // Kein Initial-State notwendig
+}
 
 // Prüft duplizierte Rohmeldung vom Stick
 function isDuplicateRawMessage(stickCmd, snr) {
@@ -341,12 +365,7 @@ function registerDevice(element) {
         isOn: devices[element.snr]?.isOn ?? false,
         position: 0
       };
-	  
-	  // ---- Initialer LED-State für Home Assistant ----
-      if (client && client.connected) {
-        client.publish(`warema/${element.snr}/light/state`, 'OFF', { retain: false });
-        client.publish(`warema/${element.snr}/light/brightness`, '0', { retain: false });
-      }
+
       break;
     }
 
@@ -406,11 +425,7 @@ function registerDevice(element) {
   // Availability online setzen
   if (client && client.connected) {
     client.publish(availability_topic, 'online', { retain: true });
-	
-	// ---- Initiale States für Home Assistant (wichtig bei leerem MQTT) ----
-    if (["21", "25", "2A", "20", "24"].includes(element.type)) {
-      client.publish(`warema/${element.snr}/state`, 'stopped', { retain: false });
-    }
+	publishInitialState(element.snr, element.type);
   }
 
   // Discovery publizieren
