@@ -341,6 +341,12 @@ function registerDevice(element) {
         isOn: devices[element.snr]?.isOn ?? false,
         position: 0
       };
+	  
+	  // ---- Initialer LED-State für Home Assistant ----
+      if (client && client.connected) {
+        client.publish(`warema/${element.snr}/light/state`, 'OFF', { retain: false });
+        client.publish(`warema/${element.snr}/light/brightness`, '0', { retain: false });
+      }
       break;
     }
 
@@ -400,6 +406,11 @@ function registerDevice(element) {
   // Availability online setzen
   if (client && client.connected) {
     client.publish(availability_topic, 'online', { retain: true });
+	
+	// ---- Initiale States für Home Assistant (wichtig bei leerem MQTT) ----
+    if (["21", "25", "2A", "20", "24"].includes(element.type)) {
+      client.publish(`warema/${element.snr}/state`, 'stopped', { retain: false });
+    }
   }
 
   // Discovery publizieren
