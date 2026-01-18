@@ -33,9 +33,13 @@ const settingsPar = {
  *   State
  *  ========================= */
 const devices = {};                 // Map von SNR -> { type, position, tilt, lastBrightness }
-const weatherCache = new Map();     // Cache für Weather-Dedup
 const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const weatherStats = new Map();     // SNR -> { wind, temp, lumen, lastPublish }
+
+// Regen-Hysterese
+const rainState = new Map(); // snr -> { state, lastChange }
+const RAIN_ON_DELAY  = parseInt(process.env.RAIN_ON_DELAY  || '10000', 10); // ms
+const RAIN_OFF_DELAY = parseInt(process.env.RAIN_OFF_DELAY || '30000', 10); // ms
 
 const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
 
@@ -97,6 +101,39 @@ function updateWeatherEMA(snr, data) {
   }
 }
 
+/**
+ * Regen-Hysterese (binär, zeitentprellt)
+ */
+function updateRainState(snr, isRaining) {
+  const now = Date.now();
+
+  let entry = rainState.get(snr);
+  if (!entry) {
+    entry = { state: false, lastChange: now };
+    rainState.set(snr, entry);
+  }
+
+  if (isRaining !== entry.state) {
+    const delay = isRaining ? RAIN_ON_DELAY : RAIN_OFF_DELAY;
+
+    if ((now - entry.lastChange) >= delay) {
+      entry.state = isRaining;
+      entry.lastChange = now;
+
+      if (client && client.connected) {
+        client.publish(
+          `warema/${snr}/rain/state`,
+          entry.state ? 'ON' : 'OFF',
+          { retain: true }
+        );
+      }
+    }
+  } else {
+    // Zustand stabil → Zeitstempel aktualisieren
+    entry.lastChange = now;
+  }
+}
+
 
 /** =========================
  *   Weather polling
@@ -105,17 +142,6 @@ function pollWeatherData() {
   try {
     const weatherData = stickUsb.getLastWeatherBroadcast();
     if (weatherData && weatherData.snr) {
-      const weatherKey = weatherData.snr;
-      const currentTime = Date.now();
-      const weatherHash = `${weatherData.temp}_${weatherData.wind}_${weatherData.lumen}_${weatherData.rain}`;
-      const cachedWeather = weatherCache.get(weatherKey);
-      const minTimeDiff = 5000; // mindestens 5s zwischen identischen Nachrichten
-
-      const shouldSend =
-        !cachedWeather ||
-        cachedWeather.hash !== weatherHash ||
-        (currentTime - cachedWeather.timestamp) > minTimeDiff;
-
       // Gerät registrieren (Sensoren) falls nötig
       if (!devices[weatherData.snr]) {
         registerDevice({ snr: weatherData.snr, type: "63" });
@@ -127,16 +153,7 @@ function pollWeatherData() {
         lumen: weatherData.lumen
       });
 
-      if (shouldSend) {
-        if (client && client.connected) {
-          client.publish(`warema/${weatherData.snr}/rain/state`, weatherData.rain ? 'ON' : 'OFF', { retain: true });
-        } else {
-          log.warn(`MQTT client not connected, skipping weather data publish for ${weatherKey}`);
-        }
-        weatherCache.set(weatherKey, { hash: weatherHash, timestamp: currentTime });
-      } else {
-        log.debug(`Skipping duplicate weather data for ${weatherKey} (hash: ${weatherHash}) via polling`);
-      }
+      updateRainState(weatherData.snr, weatherData.rain);
     }
   } catch (error) {
     log.error('Error polling weather data: ' + error.toString());
@@ -418,28 +435,7 @@ function callback(err, msg) {
         lumen: w.lumen
       });
 
-      // Dedup Hash für die restlichen Werte
-      const weatherKey = w.snr;
-      const currentTime = Date.now();
-      const weatherHash = `${w.temp}_${w.wind}_${w.lumen}_${w.rain}`;
-      const cachedWeather = weatherCache.get(weatherKey);
-      const minTimeDiff = 5000;
-
-      const shouldSend =
-        !cachedWeather ||
-        cachedWeather.hash !== weatherHash ||
-        (currentTime - cachedWeather.timestamp) > minTimeDiff;
-
-      if (shouldSend) {
-        if (client && client.connected) {
-          client.publish(`warema/${w.snr}/rain/state`, w.rain ? 'ON' : 'OFF', { retain: true });
-        } else {
-          log.warn('MQTT client not connected, skipping weather data publish for ' + weatherKey);
-        }
-        weatherCache.set(weatherKey, { hash: weatherHash, timestamp: currentTime });
-      } else {
-        log.debug('Skipping duplicate weather data for ' + weatherKey + ' (hash: ' + weatherHash + ')');
-      }
+      updateRainState(w.snr, w.rain);
       break;
     }
 
