@@ -4,10 +4,13 @@
 const warema = require('./warema-wms-venetian-blinds');
 const log = require('./logger');
 const mqtt = require('mqtt');
+const fs = require('fs');
+const DEVICE_CACHE_FILE = '/data/devices.json';
 
-process.on('SIGINT', function () {
-  process.exit(0);
-});
+let shuttingDown = false;
+let mqttReady = false;
+let stickReady = false;
+let weatherInterval = null;
 
 /** =========================
  *   ENV / Defaults
@@ -46,6 +49,45 @@ const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
 /** =========================
  *   Helpers
  *  ========================= */
+
+function rebindDevices() {
+  log.info('Rebinding devices to WMS stick...');
+
+  // 1. Erneut scannen (wichtig!)
+  stickUsb.scanDevices({ autoAssignBlinds: false });
+
+  // 2. Availability neu setzen
+  if (client && client.connected) {
+    client.publish('warema/bridge/state', 'online', { retain: true });
+
+    for (const snr of Object.keys(devices)) {
+      client.publish(`warema/${snr}/availability`, 'online', { retain: true });
+    }
+  }
+}
+
+function reRegisterKnownDevices() {
+  for (const [snr, dev] of Object.entries(devices)) {
+    registerDevice({ snr, type: dev.type });
+  }
+}
+
+function loadDeviceCache() {
+  try {
+    if (fs.existsSync(DEVICE_CACHE_FILE)) {
+      Object.assign(devices, JSON.parse(fs.readFileSync(DEVICE_CACHE_FILE)));
+      log.info('Loaded device cache');
+    }
+  } catch (e) {
+    log.warn('Failed to load device cache');
+  }
+}
+
+function saveDeviceCache() {
+  try {
+    fs.writeFileSync(DEVICE_CACHE_FILE, JSON.stringify(devices, null, 2));
+  } catch {}
+}
 
 // Prüft duplizierte Rohmeldung vom Stick
 function isDuplicateRawMessage(stickCmd, snr) {
@@ -390,6 +432,34 @@ function registerDevice(element) {
 
   // Discovery publizieren
   client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
+  
+  // Persist device cache
+  saveDeviceCache();
+}
+
+function initStick() {
+  log.info('Initializing WMS stick...');
+  stickReady = false;
+
+  stickUsb.setPosUpdInterval(pollingInterval);
+  stickUsb.setWatchMovingBlindsInterval(movingInterval);
+
+  // Explizit scannen
+  stickUsb.scanDevices({ autoAssignBlinds: false });
+}
+
+function tryFullRebind() {
+  if (!mqttReady || !stickReady || shuttingDown) return;
+
+  log.info('Performing full device rebind');
+
+  // 1. Geräte neu scannen
+  stickUsb.scanDevices({ autoAssignBlinds: false });
+
+  // 2. Availability neu setzen
+  for (const snr of Object.keys(devices)) {
+    client.publish(`warema/${snr}/availability`, 'online', { retain: true });
+  }
 }
 
 /** =========================
@@ -405,11 +475,10 @@ function callback(err, msg) {
 
   switch (msg.topic) {
     case 'wms-vb-init-completion':
-      log.info('Warema init completed');
-      stickUsb.setPosUpdInterval(pollingInterval);
-      stickUsb.setWatchMovingBlindsInterval(movingInterval);
-      log.info('Scanning...');
-      stickUsb.scanDevices({ autoAssignBlinds: false });
+      log.info('Warema stick ready');
+      stickReady = true;
+      initStick();
+	  tryFullRebind();
       break;
 
     case 'wms-vb-scanned-devices':
@@ -543,6 +612,10 @@ function normalizeWaremaBrightness(v) {
   return best;
 }
 
+//===========================
+// Load persisted device cache
+//===========================
+loadDeviceCache();
 
 /** =========================
  *   Stick & MQTT Setup
@@ -584,10 +657,20 @@ client.on('connect', function () {
     'warema/+/light/set',
     'warema/+/light/set_brightness'
   ]);
+  
+  client.publish('warema/bridge/state', 'online', { retain: true });
 
   // Wetter-Polling starten
-  setInterval(pollWeatherData, pollingInterval);
-  log.info('Started weather data polling every ' + pollingInterval + ' ms');
+  if (!weatherInterval) {
+    weatherInterval = setInterval(pollWeatherData, pollingInterval);
+  }
+
+  tryFullRebind();
+});
+
+client.on('close', () => {
+  mqttReady = false;
+  log.warn('MQTT disconnected');
 });
 
 client.on('error', function (error) {
@@ -683,4 +766,49 @@ client.on('message', function (topic, message) {
     default:
       log.warn('Unrecognised command: ' + command);
   }
+});
+
+async function shutdown(reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  log.info(`Shutting down addon (${reason})`);
+
+  try {
+    // Availability sauber auf offline
+    if (client && client.connected) {
+      client.publish('warema/bridge/state', 'offline', { retain: true });
+
+      for (const snr of Object.keys(devices)) {
+        client.publish(`warema/${snr}/availability`, 'offline', { retain: true });
+      }
+    }
+
+    // Intervalle stoppen
+    if (weatherInterval) {
+      clearInterval(weatherInterval);
+      weatherInterval = null;
+    }
+
+    // MQTT sauber schließen
+    if (client) {
+      await new Promise(resolve => client.end(false, resolve));
+    }
+
+    // Stick sauber freigeben (falls Lib das unterstützt)
+    if (stickUsb?.close) {
+      stickUsb.close();
+    }
+  } catch (e) {
+    log.error('Error during shutdown: ' + e.toString());
+  } finally {
+    process.exit(0);
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM (HA stop/restart)'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
+process.on('uncaughtException', err => {
+  log.error(err);
+  shutdown('uncaughtException');
 });
