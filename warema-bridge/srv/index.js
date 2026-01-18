@@ -436,10 +436,22 @@ function registerDevice(element) {
   if (client && client.connected) {
     client.publish(availability_topic, 'online', { retain: true });
 
-    // LED sofort Initialzustand publizieren, Cover erst nach Stick-Update
-    if (element.type === "28") {
-      publishInitialState(element.snr, element.type);
+    // === Neuer Code für Covers ===
+    const dev = devices[element.snr];
+    if (["21","25","2A","20","24"].includes(dev.type)) {
+      try {
+        // aktuelle Position vom Stick holen
+        const pos = stickUsb.vnBlindGetPosition(parseInt(element.snr, 10));
+        if (pos !== undefined && pos !== null) {
+          dev.position = pos;
+          dev.lastPosition = pos;
+        }
+      } catch (err) {
+        log.warn('Could not get initial position from stick for ' + element.snr + ': ' + err.toString());
+      }
     }
+
+     publishInitialState(element.snr, element.type);
   }
 
   // Discovery publizieren
