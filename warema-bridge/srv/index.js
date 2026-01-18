@@ -109,8 +109,18 @@ function updateRainState(snr, isRaining) {
 
   let entry = rainState.get(snr);
   if (!entry) {
-    entry = { state: false, lastChange: now };
+    entry = { state: isRaining, lastChange: now };
     rainState.set(snr, entry);
+	
+	// Initialzustand sofort publizieren
+    if (client && client.connected) {
+      client.publish(
+        `warema/${snr}/rain/state`,
+        isRaining ? 'ON' : 'OFF',
+        { retain: true }
+      );
+    }
+    return;
   }
 
   if (isRaining !== entry.state) {
