@@ -104,8 +104,10 @@ function publishInitialState(snr, type) {
   switch (type) {
     // ======= LED / Light =======
     case "28": {
-      const brightness = dev.lastBrightness ?? 100;
+      // Wenn keine gespeicherte Helligkeit vorhanden → LED aus
+      const brightness = dev.lastBrightness ?? 0;
       const isOn = brightness > 0;
+
       client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: true });
       client.publish(`warema/${snr}/light/state`, isOn ? 'ON' : 'OFF', { retain: true });
       break;
@@ -113,13 +115,18 @@ function publishInitialState(snr, type) {
 
     // ======= Cover / Aktoren =======
     case "21": case "25": case "2A": case "20": case "24": {
-      if (dev.position !== undefined) {
+      // Position nur publizieren, wenn vom Stick bekannt
+      if (typeof dev.position === 'number') {
         client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
-        const state = dev.position === 0 ? 'open' :
-                      dev.position === 100 ? 'closed' : 'stopped';
+        let state;
+        if (dev.position === 0) state = 'open';
+        else if (dev.position === 100) state = 'closed';
+        else state = 'stopped';
         client.publish(`warema/${snr}/state`, state, { retain: true });
       }
-      if (dev.tilt !== undefined) {
+
+      // Tilt nur publizieren, wenn vom Stick bekannt
+      if (typeof dev.tilt === 'number') {
         client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
       }
       break;
@@ -139,6 +146,7 @@ function publishInitialState(snr, type) {
       log.warn('publishInitialState: Unrecognized device type: ' + type);
   }
 }
+
 
 
 // Prüft duplizierte Rohmeldung vom Stick
@@ -289,7 +297,11 @@ function registerDevice(element) {
   let model;
   let topicForDiscovery;
 
-  // === DEVICE-TYPEN ===
+  if (ignoredDevices.includes(element.snr.toString())) {
+    log.info('Ignoring device ' + element.snr + ' (type ' + element.type + ')');
+    return;
+  }
+
   switch (element.type) {
 
     // === Wetterstation ===
@@ -337,12 +349,13 @@ function registerDevice(element) {
         }), { retain: true });
 
       if (client && client.connected) client.publish(availability_topic, 'online', { retain: true });
+
       devices[element.snr] = { type: element.type };
       log.info('Registered Weather Station ' + element.snr);
       return;
     }
 
-    // === LEDs (Typ 28) ===
+    // === LED ===
     case "28": {
       model = 'LED';
       payload = {
@@ -367,15 +380,13 @@ function registerDevice(element) {
       // LED initialisieren
       devices[element.snr] = {
         type: element.type,
-        lastBrightness: devices[element.snr]?.lastBrightness ?? 100,
-        isOn: devices[element.snr]?.isOn ?? false,
-        position: 0
+        lastBrightness: devices[element.snr]?.lastBrightness ?? 0,
+        isOn: false
       };
-
       break;
     }
 
-    // === Covers ===
+    // === Cover ===
     case "21": case "25": case "2A": case "20": case "24": {
       model = element.type === "21" ? 'Actuator UP' :
               element.type === "25" ? 'Vertical awning' :
@@ -383,7 +394,6 @@ function registerDevice(element) {
               element.type === "20" ? 'Plug receiver' :
               'Smart socket';
 
-      // Basis-Cover-Payload
       payload = {
         ...base_payload,
         device: { ...base_device, model },
@@ -394,8 +404,7 @@ function registerDevice(element) {
         set_position_topic: `warema/${element.snr}/set_position`
       };
 
-      // Tilt nur für Lamellendach / Aktoren
-      if (["21", "2A"].includes(element.type)) {
+      if (["21","2A"].includes(element.type)) {
         payload.tilt_status_topic = `warema/${element.snr}/tilt`;
         payload.tilt_command_topic = `warema/${element.snr}/set_tilt`;
         payload.tilt_min = -100;
@@ -404,7 +413,7 @@ function registerDevice(element) {
 
       topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
 
-      // Cover initialisieren (physikalische Position/Tilt wird später von Stick gemeldet)
+      // Cover initialisieren: keine Position → HA bleibt unknown
       devices[element.snr] = {
         type: element.type,
         position: undefined,
@@ -418,11 +427,6 @@ function registerDevice(element) {
       return;
   }
 
-  if (ignoredDevices.includes(element.snr.toString())) {
-    log.info('Ignoring device ' + element.snr + ' (type ' + element.type + ')');
-    return;
-  }
-
   // Für steuerbare Geräte auf Stick legen
   if (!["63"].includes(element.type)) {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
@@ -431,17 +435,20 @@ function registerDevice(element) {
   // Availability online setzen
   if (client && client.connected) {
     client.publish(availability_topic, 'online', { retain: true });
-	publishInitialState(element.snr, element.type);
+
+    // LED sofort Initialzustand publizieren, Cover erst nach Stick-Update
+    if (element.type === "28") {
+      publishInitialState(element.snr, element.type);
+    }
   }
 
   // Discovery publizieren
   if (topicForDiscovery && payload) client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
 
   // Device cache speichern (nur LED relevant)
-  if (element.type === "28") {
-	  saveDeviceCache();
-  }
+  if (element.type === "28") saveDeviceCache();
 }
+
 
 function initStick() {
   log.info('Initializing WMS stick...');
@@ -558,7 +565,10 @@ function callback(err, msg) {
           dev.position = msg.payload.position;
 		  dev.positionFromStick = true;
 		  
-          client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
+		  const retainState = dev.lastPosition === undefined;
+		  
+          client.publish(`warema/${snr}/position`, '' + dev.position, { retain: retainState });
+		  
           let state;
           if (msg.payload.moving === true) {
             state = dev.position > (dev.lastPosition ?? 0) ? 'closing' : 'opening';
@@ -568,7 +578,7 @@ function callback(err, msg) {
               dev.position === 100 ? 'closed' : 'stopped';
           }
 
-          client.publish(`warema/${snr}/state`, state, { retain: false });
+          client.publish(`warema/${snr}/state`, state, { retain: retainState });
           dev.lastPosition = dev.position;
         }
         if (typeof msg.payload.angle !== "undefined") {
