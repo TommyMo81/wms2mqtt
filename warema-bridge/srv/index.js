@@ -96,8 +96,8 @@ function restoreDeviceState(snr) {
   // LED (Typ 28)
   if (dev.type === "28") {
     const brightness = dev.lastBrightness ?? 0;
-    client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: false });
-    client.publish(`warema/${snr}/light/state`, brightness > 0 ? 'ON' : 'OFF', { retain: false });
+    client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: true });
+    client.publish(`warema/${snr}/light/state`, brightness > 0 ? 'ON' : 'OFF', { retain: true });
   }
   // Cover / Aktoren können analog mit position/state gemacht werden
   else if (dev.position !== undefined) {
@@ -560,7 +560,7 @@ function callback(err, msg) {
            msg.payload.moving === false
          ) {
            const brightness = normalizeWaremaBrightness(msg.payload.position);
-           updateLightState(snr, brightness);
+           updateLightState(snr, brightness, false);
          }
          return;
       } else {
@@ -595,7 +595,7 @@ function callback(err, msg) {
   }
 }
 
-function updateLightState(snr, brightness) {
+function updateLightState(snr, brightness, retain = false) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
 
   if (!devices[snr]) devices[snr] = {};
@@ -603,16 +603,12 @@ function updateLightState(snr, brightness) {
   devices[snr].position = v;
 
   // Letzte bekannte Helligkeit nur speichern, wenn >0
-  if (v > 0) {
-    devices[snr].lastBrightness = v;
-  }
+  if (v > 0) devices[snr].lastBrightness = v;
 
   if (client && client.connected) {
     // Helligkeit publizieren
-    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: false });
-
-    // ON/OFF automatisch abhängig von Helligkeit
-    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: false });
+    client.publish(`warema/${snr}/light/brightness`, String(v), { retain });
+    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain });
   }
 }
 
@@ -781,7 +777,7 @@ client.on('message', function (topic, message) {
       devices[snr].haControlUntil = Date.now() + 3000;
 	  
       // nur lokal merken, NICHT als Feedbackschleife
-      updateLightState(snr, target);
+      updateLightState(snr, target, false);
       break;
     }
 
