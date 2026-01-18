@@ -554,7 +554,7 @@ function callback(err, msg) {
            if (brightness > 0) {
              devices[snr].lastBrightness = brightness;
            }
-           updateLightState(snr, brightness, true);
+           updateLightState(snr, brightness, false);
          }
          return;
       } else {
