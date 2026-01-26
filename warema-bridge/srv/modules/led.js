@@ -67,7 +67,6 @@ function handleHaLightCommand(client, snr, command, payload) {
         const up = payload.toUpperCase();
         if (up === 'ON') {
             target = dev.lastBrightness ?? 100; // last device wins -> use latest persisted value
-            updateLightState(client, snr, target, true); // UI update
         } else if (up === 'OFF') {
             target = 0;
         }
