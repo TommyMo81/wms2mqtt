@@ -2,7 +2,6 @@
 
 /**
  * Main entry for Warema Home Assistant Add-on
- * Modular Version (Variante B) — v2 (FB steps define lastBrightness)
  */
 
 const { settingsPar } = require('./core/env');
