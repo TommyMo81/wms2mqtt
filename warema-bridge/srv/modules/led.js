@@ -29,19 +29,15 @@ function normalizeBrightness(v) {
  */
 function updateLightState(client, snr, brightness, retain = false) {
     const v = Math.max(0, Math.min(100, Number(brightness)));
-    const now = Date.now();
 
     if (!devices[snr]) devices[snr] = {};
     const dev = devices[snr];
+
     dev.type = '28';
     dev.position = v;
 
-    const haActive = dev.haControlled && dev.haControlUntil && now < dev.haControlUntil;
-
-    // Variante A + "last device wins":
-    // - Während HA-Fahrt KEIN lastBrightness-Update hier
-    // - Final (moving=false) wird lastBrightness in handleStickBrightnessFinal gesetzt
-    if (v > 0 && !haActive) {
+    // lastBrightness nur pflegen, wenn real >0
+    if (v > 0) {
         dev.lastBrightness = v;
         saveCache();
     }
@@ -55,64 +51,52 @@ function updateLightState(client, snr, brightness, retain = false) {
 /**
  * Handle HA commands (set / set_brightness)
  */
-function handleHaLightCommand(client, snr, command, payload) {
-    const dev = devices[snr] || {};
+function handleHaLightCommand(snr, command, payload) {
+    if (!devices[snr]) devices[snr] = {};
+    const dev = devices[snr];
 
+    // HA-Steuerung ist nur ein zeitlich begrenzter Hint
     dev.haControlled = true;
-    dev.haControlUntil = Date.now() + 3000; // 3s window to detect final confirmation
+    dev.haControlUntil = Date.now() + 3000;
 
     let target = 0;
 
     if (command === 'light/set') {
         const up = payload.toUpperCase();
         if (up === 'ON') {
-            target = dev.lastBrightness ?? 100; // last device wins -> use latest persisted value
+            target = dev.lastBrightness ?? 100;
         } else if (up === 'OFF') {
             target = 0;
         }
-    } else if (command === 'light/set_brightness') {
+    }
+
+    if (command === 'light/set_brightness') {
         const haValue = Math.max(0, Math.min(100, parseInt(payload, 10)));
         target = normalizeBrightness(haValue);
     }
 
-    return target; // caller sends to stick
+    return target;
 }
 
 /**
- * FB step (may be moving=true): if HA not active, every step writes lastBrightness (>0)
+ * FB-Step (moving=true/false)
+ * → IMMER akzeptieren
  */
 function handleStickBrightnessStep(client, snr, rawValue) {
-    const dev = devices[snr] || {};
-    const now = Date.now();
-
-    const haActive = dev.haControlled && dev.haControlUntil && now < dev.haControlUntil;
-    if (haActive) return; // ignore FB while HA drives
-
     const normalized = normalizeBrightness(rawValue);
-    if (normalized > 0) {
-        dev.lastBrightness = normalized; // immediate step update
-        saveCache();
-    }
-
-    // reflect to HA without retain (intermediate)
     updateLightState(client, snr, normalized, false);
 }
 
 /**
- * Final confirmation (moving=false): ALWAYS set lastBrightness if >0
- * This ensures: last device (HA or FB) wins.
+ * FB-Final (moving=false)
  */
 function handleStickBrightnessFinal(client, snr, rawValue) {
-    const dev = devices[snr] || {};
     const normalized = normalizeBrightness(rawValue);
+    updateLightState(client, snr, normalized, false);
 
-    if (normalized > 0) {
-        dev.lastBrightness = normalized; // commit final value regardless of HA
-        saveCache();
+    if (devices[snr]) {
+        devices[snr].haControlled = false;
     }
-
-    updateLightState(client, snr, normalized, true);
-    dev.haControlled = false; // end HA window if it was HA
 }
 
 module.exports = {
