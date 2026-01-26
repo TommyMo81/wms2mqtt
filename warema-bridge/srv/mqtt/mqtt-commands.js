@@ -65,14 +65,11 @@ client.on('message', function (topic, message) {
             stickUsb.vnBlindSetPosition(snr, parseInt(devices[snr]?.position ?? 0, 10), parseInt(message, 10));
             break;
 
-        case 'light.set':
-            break;
-
         case 'light/set':
         case 'light/set_brightness': {
             const target = handleHaLightCommand(client, snr, command, message);
-            stickUsb.vnBlindSetPosition(snr, target, 0);
-            updateLightState(client, snr, target, false);
+            updateLightState(client, snr, target, true);
+			stickUsb.vnBlindSetPosition(snr, target, 0);
             break;
         }
 
