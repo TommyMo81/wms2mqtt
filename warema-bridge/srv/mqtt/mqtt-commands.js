@@ -70,6 +70,13 @@ client.on('message', function (topic, message) {
             const target = handleHaLightCommand(client, snr, command, message);
             updateLightState(client, snr, target, true);
 			stickUsb.vnBlindSetPosition(snr, target, 0);
+			
+			// 4️⃣ Fail-Safe: HA-Hint automatisch freigeben
+			setTimeout(() => {
+				if (devices[snr]) {
+					devices[snr].haControlled = false;
+				}
+			}, 3500);
             break;
         }
 
