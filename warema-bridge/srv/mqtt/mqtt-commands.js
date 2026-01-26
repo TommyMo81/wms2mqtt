@@ -68,7 +68,7 @@ client.on('message', function (topic, message) {
         case 'light/set':
         case 'light/set_brightness': {
             const target = handleHaLightCommand(client, snr, command, message);
-            updateLightState(client, snr, target, true);
+            updateLightState(client, snr, target, false);
 			stickUsb.vnBlindSetPosition(snr, target, 0);
 			
 			// 4️⃣ Fail-Safe: HA-Hint automatisch freigeben
