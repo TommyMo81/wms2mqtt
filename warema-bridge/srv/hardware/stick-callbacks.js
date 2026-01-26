@@ -246,8 +246,7 @@ setCallbackHandlers({
                 break;
             }
             case 'wms-vb-scanned-devices': {
-                log.debug('Scanned devices:
-' + JSON.stringify(msg.payload, null, 2));
+                log.debug('Scanned devices:' + JSON.stringify(msg.payload, null, 2));
                 const forced = (process.env.FORCE_DEVICES || '').split(',').map(s => s.trim()).filter(Boolean);
                 if (forced.length) {
                     forced.forEach(deviceString => {
@@ -257,8 +256,7 @@ setCallbackHandlers({
                 } else {
                     msg.payload.devices.forEach(element => registerDevice(element));
                 }
-                log.debug('Registered devices:
-' + JSON.stringify(vnBlindsList(), null, 2));
+                log.debug('Registered devices:' + JSON.stringify(vnBlindsList(), null, 2));
                 break;
             }
             case 'wms-vb-rcv-weather-broadcast': {
