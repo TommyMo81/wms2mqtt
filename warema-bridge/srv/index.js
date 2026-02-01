@@ -18,9 +18,8 @@ let weatherInterval = null;
 const mqttServer = process.env.MQTT_SERVER || 'mqtt://localhost';
 const ignoredDevices = process.env.IGNORED_DEVICES ? process.env.IGNORED_DEVICES.split(',') : [];
 const forceDevices = process.env.FORCE_DEVICES ? process.env.FORCE_DEVICES.split(',') : [];
-const devicePollingInterval = parseInt(process.env.DEVICE_POLLING_INTERVAL || '2000', 10);
-const weatherPollingInterval = parseInt(process.env.WEATHER_POLLING_INTERVAL || '30000', 10);
-const movingInterval = parseInt(process.env.MOVING_INTERVAL || '2000', 10);
+const pollingInterval = parseInt(process.env.POLLING_INTERVAL || '30000', 10);
+const movingInterval = parseInt(process.env.MOVING_INTERVAL || '1000', 10);
 
 // Weather EMA Aggregation (für Statistik)
 const WEATHER_EMA_ALPHA = parseFloat(process.env.WEATHER_EMA_ALPHA || '0.2');
@@ -89,51 +88,6 @@ function saveDeviceCache() {
     fs.writeFileSync(DEVICE_CACHE_FILE, JSON.stringify(devices, null, 2));
   } catch {}
 }
-
-
-/**
- * Publiziert den initialen Zustand eines Geräts direkt nach der Registrierung / Availability.
- * @param {string} snr - Seriennummer / ID des Geräts
- * @param {string} type - Gerätetyp ("28"=LED, "21/25/2A/20/24"=Cover, "63"=Wetterstation)
- */
-function publishInitialState(snr, type) {
-  if (!client || !client.connected) return;
-  const dev = devices[snr];
-  if (!dev) return;
-
-  switch (type) {
-    case "28": { // LED
-      const brightness = dev.lastBrightness ?? 0;
-      const isOn = brightness > 0;
-      client.publish(`warema/${snr}/light/brightness`, String(brightness), { retain: true });
-      client.publish(`warema/${snr}/light/state`, isOn ? 'ON' : 'OFF', { retain: true });
-      break;
-    }
-    case "21": case "25": case "2A": case "20": case "24": { // Cover
-      if (dev.position !== undefined) {
-        client.publish(`warema/${snr}/position`, '' + dev.position, { retain: true });
-        const state = dev.position === 0 ? 'open' :
-                      dev.position === 100 ? 'closed' : 'stopped';
-        client.publish(`warema/${snr}/state`, state, { retain: true });
-      }
-      if (dev.tilt !== undefined) {
-        client.publish(`warema/${snr}/tilt`, '' + dev.tilt, { retain: true });
-      }
-      break;
-    }
-    case "63": { // Wetterstation bleibt gleich
-      const w = weatherStats.get(snr) || {};
-      if (w.lumen !== undefined) client.publish(`warema/${snr}/illuminance/state`, Math.round(w.lumen).toString(), { retain: true });
-      if (w.temp  !== undefined) client.publish(`warema/${snr}/temperature/state`, w.temp.toFixed(1), { retain: true });
-      if (w.wind  !== undefined) client.publish(`warema/${snr}/wind/state`, w.wind.toFixed(1), { retain: true });
-      if (w.rain  !== undefined) client.publish(`warema/${snr}/rain/state`, w.rain ? 'ON' : 'OFF', { retain: true });
-      break;
-    }
-  }
-}
-
-
-
 
 // Prüft duplizierte Rohmeldung vom Stick
 function isDuplicateRawMessage(stickCmd, snr) {
@@ -283,66 +237,140 @@ function registerDevice(element) {
   let model;
   let topicForDiscovery;
 
-  if (ignoredDevices.includes(element.snr.toString())) {
-    log.info('Ignoring device ' + element.snr + ' (type ' + element.type + ')');
-    return;
-  }
-
   switch (element.type) {
-
-    // === Wetterstation ===
     case "63": {
+      // Weather station pro
       model = 'Weather station pro';
-      const payloadBase = { ...base_payload, device: { ...base_device, model } };
+      const payloadBase = {
+        ...base_payload,
+        device: { ...base_device, model }
+      };
 
       // Illuminance
-      client.publish(`homeassistant/sensor/${element.snr}/illuminance/config`,
-        JSON.stringify({ ...payloadBase,
-          state_topic: `warema/${element.snr}/illuminance/state`,
-          device_class: 'illuminance',
-          unique_id: `${element.snr}_illuminance`,
-          unit_of_measurement: 'lx',
-          state_class: 'measurement'
-        }), { retain: true });
+      const illuminance_payload = {
+        ...payloadBase,
+        state_topic: `warema/${element.snr}/illuminance/state`,
+        device_class: 'illuminance',
+        unique_id: `${element.snr}_illuminance`,
+        default_entity_id: `sensor.${element.snr}_illuminance`,
+        unit_of_measurement: 'lx',
+        state_class: 'measurement'
+      };
+      client.publish(`homeassistant/sensor/${element.snr}/illuminance/config`, JSON.stringify(illuminance_payload), { retain: true });
 
-      // Temperatur
-      client.publish(`homeassistant/sensor/${element.snr}/temperature/config`,
-        JSON.stringify({ ...payloadBase,
-          state_topic: `warema/${element.snr}/temperature/state`,
-          device_class: 'temperature',
-          unique_id: `${element.snr}_temperature`,
-          unit_of_measurement: '°C',
-          state_class: 'measurement',
-          suggested_display_precision: 1
-        }), { retain: true });
+      // Temperature
+      const temperature_payload = {
+        ...payloadBase,
+        state_topic: `warema/${element.snr}/temperature/state`,
+        device_class: 'temperature',
+        unique_id: `${element.snr}_temperature`,
+        default_entity_id: `sensor.${element.snr}_temperature`,
+        unit_of_measurement: '°C',
+        state_class: 'measurement',
+        suggested_display_precision: 1
+      };
+      client.publish(`homeassistant/sensor/${element.snr}/temperature/config`, JSON.stringify(temperature_payload), { retain: true });
 
-      // Wind
-      client.publish(`homeassistant/sensor/${element.snr}/wind/config`,
-        JSON.stringify({ ...payloadBase,
-          state_topic: `warema/${element.snr}/wind/state`,
-          device_class: 'wind_speed',
-          unique_id: `${element.snr}_wind`,
-          unit_of_measurement: 'm/s',
-          state_class: 'measurement'
-        }), { retain: true });
+      // Wind (aggregiert)
+      const wind_payload = {
+        ...payloadBase,
+        state_topic: `warema/${element.snr}/wind/state`,
+        device_class: 'wind_speed',
+        unique_id: `${element.snr}_wind`,
+        default_entity_id: `sensor.${element.snr}_wind`,
+        unit_of_measurement: 'm/s',
+        state_class: 'measurement',
+        suggested_display_precision: 1
+      };
+      client.publish(`homeassistant/sensor/${element.snr}/wind/config`, JSON.stringify(wind_payload), { retain: true });
 
-      // Regen
-      client.publish(`homeassistant/binary_sensor/${element.snr}/rain/config`,
-        JSON.stringify({ ...payloadBase,
-          state_topic: `warema/${element.snr}/rain/state`,
-          device_class: 'moisture',
-          unique_id: `${element.snr}_rain`
-        }), { retain: true });
+      // Rain
+      const rain_payload = {
+        ...payloadBase,
+        state_topic: `warema/${element.snr}/rain/state`,
+        device_class: 'moisture',
+        unique_id: `${element.snr}_rain`,
+        default_entity_id: `sensor.${element.snr}_rain`,
+      };
+      client.publish(`homeassistant/binary_sensor/${element.snr}/rain/config`, JSON.stringify(rain_payload), { retain: true });
 
-      if (client && client.connected) client.publish(availability_topic, 'online', { retain: true });
-
-      devices[element.snr] = { type: element.type };
-      log.info('Registered Weather Station ' + element.snr);
+      if (client && client.connected) {
+        client.publish(availability_topic, 'online', { retain: true });
+      }
+      devices[element.snr] = { type: element.type }; // Sensorgerät im Cache
+      log.info('No need to add to stick, weather updates are broadcasted. ' + element.snr + ' with type: ' + element.type);
       return;
     }
 
-    // === LED ===
-    case "28": {
+    case "07": // WMS Remote pro
+    case "09": // WMS WebControl Pro
+      return;
+
+    case "20": { // Plug receiver (als Cover)
+      model = 'Plug receiver';
+      payload = {
+        ...base_payload,
+        device: { ...base_device, model },
+        position_open: 0,
+        position_closed: 100,
+        command_topic: `warema/${element.snr}/set`,
+        state_topic: `warema/${element.snr}/state`,
+        position_topic: `warema/${element.snr}/position`,
+        set_position_topic: `warema/${element.snr}/set_position`
+      };
+      topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
+      break;
+    }
+
+    case "21": { // Actuator UP (als Cover)
+      model = 'Actuator UP';
+      payload = {
+        ...base_payload,
+        device: { ...base_device, model },
+        position_open: 0,
+        position_closed: 100,
+        command_topic: `warema/${element.snr}/set`,
+        position_topic: `warema/${element.snr}/position`,
+        tilt_status_topic: `warema/${element.snr}/tilt`,
+        set_position_topic: `warema/${element.snr}/set_position`,
+        tilt_command_topic: `warema/${element.snr}/set_tilt`,
+        tilt_closed_value: -100,
+        tilt_opened_value: 100,
+        tilt_min: -100,
+        tilt_max: 100
+      };
+      topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
+      break;
+    }
+
+    case "24": { // Smart socket
+      model = 'Smart socket';
+      payload = {
+        ...base_payload,
+        device: { ...base_device, model },
+        state_topic: `warema/${element.snr}/state`,
+        command_topic: `warema/${element.snr}/set`,
+      };
+      topicForDiscovery = `homeassistant/switch/${element.snr}/${element.snr}/config`;
+      break;
+    }
+
+    case "25": { // Vertical awning
+      model = 'Vertical awning';
+      payload = {
+        ...base_payload,
+        device: { ...base_device, model },
+        position_open: 0,
+        position_closed: 100,
+        command_topic: `warema/${element.snr}/set`,
+        position_topic: `warema/${element.snr}/position`,
+        set_position_topic: `warema/${element.snr}/set_position`,
+      };
+      topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
+      break;
+    }
+
+    case "28": { // LED -> MQTT Light mit Dimmfunktion
       model = 'LED';
       payload = {
         ...base_payload,
@@ -362,49 +390,20 @@ function registerDevice(element) {
         default_entity_id: `light.${element.snr}`
       };
       topicForDiscovery = `homeassistant/light/${element.snr}/${element.snr}/config`;
-
-      // LED initialisieren
-      devices[element.snr] = {
-        type: element.type,
-        lastBrightness: devices[element.snr]?.lastBrightness ?? 0,
-        isOn: false
-      };
       break;
     }
 
-    // === Cover ===
-    case "21": case "25": case "2A": case "20": case "24": {
-      model = element.type === "21" ? 'Actuator UP' :
-              element.type === "25" ? 'Vertical awning' :
-              element.type === "2A" ? 'Slat roof' :
-              element.type === "20" ? 'Plug receiver' :
-              'Smart socket';
-
+    case "2A": { // Slat roof
+      model = 'Slat roof';
       payload = {
         ...base_payload,
         device: { ...base_device, model },
-        position_open: 0,
-        position_closed: 100,
-        command_topic: `warema/${element.snr}/set`,
+        tilt_status_topic: `warema/${element.snr}/tilt`,
+        tilt_command_topic: `warema/${element.snr}/set_tilt`,
         position_topic: `warema/${element.snr}/position`,
-        set_position_topic: `warema/${element.snr}/set_position`
+        set_position_topic: `warema/${element.snr}/set_position`,
       };
-
-      if (["21","2A"].includes(element.type)) {
-        payload.tilt_status_topic = `warema/${element.snr}/tilt`;
-        payload.tilt_command_topic = `warema/${element.snr}/set_tilt`;
-        payload.tilt_min = -100;
-        payload.tilt_max = 100;
-      }
-
       topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
-
-      // Cover initialisieren: keine Position → HA bleibt unknown
-      devices[element.snr] = {
-        type: element.type,
-        position: undefined,
-        tilt: undefined
-      };
       break;
     }
 
@@ -413,46 +412,36 @@ function registerDevice(element) {
       return;
   }
 
-  // Für steuerbare Geräte auf Stick legen
-  if (!["63"].includes(element.type)) {
+  if (ignoredDevices.includes(element.snr.toString())) {
+    log.info('Ignoring and removing device ' + element.snr + ' (type ' + element.type + ')');
+    return;
+  }
+
+  log.debug('Adding device ' + element.snr + ' (type ' + element.type + ')');
+
+  // Für steuerbare Geräte auf den Stick legen
+  if (element.type !== "63") {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
   }
+  devices[element.snr] = { type: element.type, lastBrightness: 100 };
 
   // Availability online setzen
   if (client && client.connected) {
     client.publish(availability_topic, 'online', { retain: true });
-
-    // === Neuer Code für Covers ===
-    const dev = devices[element.snr];
-    if (["21","25","2A","20","24"].includes(dev.type)) {
-      try {
-        // aktuelle Position vom Stick holen
-        const pos = stickUsb.vnBlindGetPosition(parseInt(element.snr, 10));
-        if (pos !== undefined && pos !== null) {
-          dev.position = pos;
-          dev.lastPosition = pos;
-        }
-      } catch (err) {
-        log.warn('Could not get initial position from stick for ' + element.snr + ': ' + err.toString());
-      }
-    }
-
-     publishInitialState(element.snr, element.type);
   }
 
   // Discovery publizieren
-  if (topicForDiscovery && payload) client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
-
-  // Device cache speichern (nur LED relevant)
-  if (element.type === "28") saveDeviceCache();
+  client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
+  
+  // Persist device cache
+  saveDeviceCache();
 }
-
 
 function initStick() {
   log.info('Initializing WMS stick...');
   stickReady = false;
 
-  stickUsb.setPosUpdInterval(devicePollingInterval);
+  stickUsb.setPosUpdInterval(pollingInterval);
   stickUsb.setWatchMovingBlindsInterval(movingInterval);
 
   // Explizit scannen
@@ -532,7 +521,6 @@ function callback(err, msg) {
     case 'wms-vb-blind-position-update': {
       const snr = msg.payload.snr;
       const dev = devices[snr] || {};
-	  if (!dev) break;
       log.debug('Position update:\n' + JSON.stringify(msg.payload, null, 2));
 
       // Für LED: Position = Helligkeit
@@ -540,9 +528,9 @@ function callback(err, msg) {
          const now = Date.now();
 
          // Wenn HA kürzlich gesteuert hat → ignorieren (Loop-Schutz)
-         //if (dev.haControlUntil && now < dev.haControlUntil) {
-         //  return;
-         //}
+         if (dev.haControlUntil && now < dev.haControlUntil) {
+           return;
+         }
 
          // Nur Endzustände von externer Steuerung (Fernbedienung)
          if (
@@ -550,34 +538,23 @@ function callback(err, msg) {
            msg.payload.moving === false
          ) {
            const brightness = normalizeWaremaBrightness(msg.payload.position);
-           // Stick ist führend
-           if (brightness > 0) {
-             devices[snr].lastBrightness = brightness;
-           }
-           updateLightState(snr, brightness, false);
+           updateLightState(snr, brightness);
          }
          return;
       } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
-          dev.position = msg.payload.position;
-		  dev.positionFromStick = true;
-		  
-		  const retainState = dev.lastPosition === undefined;
-		  
-          client.publish(`warema/${snr}/position`, '' + dev.position, { retain: retainState });
-		  
-          let state;
-          if (msg.payload.moving === true) {
-            state = dev.position > (dev.lastPosition ?? 0) ? 'closing' : 'opening';
-          } else {
-            state =
-              dev.position === 0 ? 'open' :
-              dev.position === 100 ? 'closed' : 'stopped';
+          devices[snr].position = msg.payload.position;
+          client.publish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
+          if (msg.payload.moving === false) {
+            if (msg.payload.position === 0) {
+              client.publish(`warema/${snr}/state`, 'open', { retain: true });
+            } else if (msg.payload.position === 100) {
+              client.publish(`warema/${snr}/state`, 'closed', { retain: true });
+            } else {
+              client.publish(`warema/${snr}/state`, 'stopped', { retain: true });
+            }
           }
-
-          client.publish(`warema/${snr}/state`, state, { retain: retainState });
-          dev.lastPosition = dev.position;
         }
         if (typeof msg.payload.angle !== "undefined") {
           devices[snr].tilt = msg.payload.tilt;
@@ -596,7 +573,7 @@ function callback(err, msg) {
   }
 }
 
-function updateLightState(snr, brightness, retain = false) {
+function updateLightState(snr, brightness) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
 
   if (!devices[snr]) devices[snr] = {};
@@ -605,13 +582,15 @@ function updateLightState(snr, brightness, retain = false) {
 
   // Letzte bekannte Helligkeit nur speichern, wenn >0
   if (v > 0) {
-	devices[snr].lastBrightness = v;
+    devices[snr].lastBrightness = v;
   }
 
   if (client && client.connected) {
     // Helligkeit publizieren
-    client.publish(`warema/${snr}/light/brightness`, String(v), { retain });
-    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain });
+    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: false });
+
+    // ON/OFF automatisch abhängig von Helligkeit
+    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: false });
   }
 }
 
@@ -670,8 +649,6 @@ const client = mqtt.connect(mqttServer, {
 
 client.on('connect', function () {
   log.info('Connected to MQTT');
-  mqttReady = true;
-  
   client.subscribe([
     'warema/+/set',
     'warema/+/set_position',
@@ -685,7 +662,7 @@ client.on('connect', function () {
 
   // Wetter-Polling starten
   if (!weatherInterval) {
-    weatherInterval = setInterval(pollWeatherData, weatherPollingInterval);
+    weatherInterval = setInterval(pollWeatherData, pollingInterval);
   }
 
   tryFullRebind();
@@ -769,7 +746,6 @@ client.on('message', function (topic, message) {
       if (command === 'light/set') {
         if (message.toUpperCase() === 'ON') {
           target = dev.lastBrightness ?? 100;
-		  updateLightState(snr, target, true); // <-- WICHTIG
         } else if (message.toUpperCase() === 'OFF') {
           target = 0;
         }
@@ -783,7 +759,7 @@ client.on('message', function (topic, message) {
       devices[snr].haControlUntil = Date.now() + 3000;
 	  
       // nur lokal merken, NICHT als Feedbackschleife
-      updateLightState(snr, target, false);
+      updateLightState(snr, target);
       break;
     }
 
