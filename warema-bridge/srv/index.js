@@ -4,8 +4,6 @@
 const warema = require('./warema-wms-venetian-blinds');
 const log = require('./logger');
 const mqtt = require('mqtt');
-const fs = require('fs');
-const DEVICE_CACHE_FILE = '/data/devices.json';
 
 let shuttingDown = false;
 let mqttReady = false;
@@ -64,29 +62,6 @@ function rebindDevices() {
       client.publish(`warema/${snr}/availability`, 'online', { retain: true });
     }
   }
-}
-
-function reRegisterKnownDevices() {
-  for (const [snr, dev] of Object.entries(devices)) {
-    registerDevice({ snr, type: dev.type });
-  }
-}
-
-function loadDeviceCache() {
-  try {
-    if (fs.existsSync(DEVICE_CACHE_FILE)) {
-      Object.assign(devices, JSON.parse(fs.readFileSync(DEVICE_CACHE_FILE)));
-      log.info('Loaded device cache');
-    }
-  } catch (e) {
-    log.warn('Failed to load device cache');
-  }
-}
-
-function saveDeviceCache() {
-  try {
-    fs.writeFileSync(DEVICE_CACHE_FILE, JSON.stringify(devices, null, 2));
-  } catch {}
 }
 
 // Prüft duplizierte Rohmeldung vom Stick
@@ -432,9 +407,6 @@ function registerDevice(element) {
 
   // Discovery publizieren
   client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
-  
-  // Persist device cache
-  saveDeviceCache();
 }
 
 function initStick() {
@@ -611,11 +583,6 @@ function normalizeWaremaBrightness(v) {
   }
   return best;
 }
-
-//===========================
-// Load persisted device cache
-//===========================
-loadDeviceCache();
 
 /** =========================
  *   Stick & MQTT Setup
