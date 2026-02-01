@@ -357,7 +357,6 @@ function registerDevice(element) {
         brightness_state_topic: `warema/${element.snr}/light/brightness`,
         brightness_scale: 100,
         supported_color_modes: ["brightness"],
-        color_mode: "brightness",
         payload_on: 'ON',
         payload_off: 'OFF',
         optimistic: true,
@@ -403,6 +402,8 @@ function registerDevice(element) {
   // Availability online setzen
   if (client && client.connected) {
     client.publish(availability_topic, 'online', { retain: true });
+	// Falls LED nach MQTT-Connect registriert wird
+    restoreLedState(element.snr);
   }
 
   // Discovery publizieren
@@ -559,11 +560,22 @@ function updateLightState(snr, brightness) {
 
   if (client && client.connected) {
     // Helligkeit publizieren
-    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: false });
+    client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
 
     // ON/OFF automatisch abhängig von Helligkeit
-    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: false });
+    client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
   }
+}
+
+function restoreLedState(snr) {
+  const dev = devices[snr];
+  if (!dev || dev.type !== "28") return;
+  if (dev.lastBrightness === undefined) return;
+
+  log.info(`Restoring LED state for ${snr}: ${dev.lastBrightness}%`);
+
+  // Nur MQTT-State setzen, kein Hardware-Befehl!
+  updateLightState(snr, dev.lastBrightness);
 }
 
 
@@ -615,7 +627,9 @@ const client = mqtt.connect(mqttServer, {
 });
 
 client.on('connect', function () {
+  mqttReady = true;
   log.info('Connected to MQTT');
+  
   client.subscribe([
     'warema/+/set',
     'warema/+/set_position',
@@ -626,6 +640,11 @@ client.on('connect', function () {
   ]);
   
   client.publish('warema/bridge/state', 'online', { retain: true });
+  
+  for (const snr of Object.keys(devices)) {
+    client.publish(`warema/${snr}/availability`, 'online', { retain: true });
+	restoreLedState(snr);
+  }
 
   // Wetter-Polling starten
   if (!weatherInterval) {
