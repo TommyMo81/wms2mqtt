@@ -1,4 +1,3 @@
-
 'use strict';
 
 const warema = require('./warema-wms-venetian-blinds');
@@ -498,24 +497,23 @@ function callback(err, msg) {
 
       // Für LED: Position = Helligkeit
       if (dev.type === "28") {
-        const now = Date.now();
+         const now = Date.now();
 
-        // Loop-Schutz: HA hat kürzlich selbst gesteuert
-        if (dev.haControlUntil && now < dev.haControlUntil) {
-          return;
-        }
+         // Wenn HA kürzlich gesteuert hat → ignorieren (Loop-Schutz)
+         if (dev.haControlUntil && now < dev.haControlUntil) {
+           return;
+         }
 
-       if (typeof msg.payload.position !== "undefined") {
-          const brightness = normalizeWaremaBrightness(msg.payload.position);
-
-          // Nur echte Änderung publizieren
-          if (brightness !== dev.position) {
-            updateLightState(snr, brightness);
-          }
-        }
-        return;
-      }
-      else {
+         // Nur Endzustände von externer Steuerung (Fernbedienung)
+         if (
+           typeof msg.payload.position !== "undefined" &&
+           msg.payload.moving === false
+         ) {
+           const brightness = normalizeWaremaBrightness(msg.payload.position);
+           updateLightState(snr, brightness);
+         }
+         return;
+      } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
           devices[snr].position = msg.payload.position;
