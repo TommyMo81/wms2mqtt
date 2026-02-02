@@ -576,7 +576,6 @@ function restoreLedState(snr) {
   updateLightState(snr, dev.lastBrightness);
 }
 
-
 function normalizeWaremaBrightness(v) {
   if (v <= 0) return 0;
 
