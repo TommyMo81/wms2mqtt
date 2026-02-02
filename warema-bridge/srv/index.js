@@ -411,7 +411,6 @@ function registerDevice(element) {
 
 function initStick() {
   log.info('Initializing WMS stick...');
-  stickReady = false;
 
   stickUsb.setPosUpdInterval(pollingInterval);
   stickUsb.setWatchMovingBlindsInterval(movingInterval);
@@ -576,6 +575,7 @@ function restoreLedState(snr) {
   // Nur MQTT-State setzen, kein Hardware-Befehl!
   updateLightState(snr, dev.lastBrightness);
 }
+
 
 function normalizeWaremaBrightness(v) {
   if (v <= 0) return 0;
