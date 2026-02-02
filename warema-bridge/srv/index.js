@@ -396,7 +396,7 @@ function registerDevice(element) {
   if (element.type !== "63") {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
   }
-  devices[element.snr] = { type: element.type, lastBrightness: 100 };
+  devices[element.snr] = { type: element.type };
 
   // Availability online setzen
   if (client && client.connected) {
