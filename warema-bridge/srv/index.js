@@ -411,7 +411,6 @@ function registerDevice(element) {
 
 function initStick() {
   log.info('Initializing WMS stick...');
-  stickReady = false;
 
   stickUsb.setPosUpdInterval(pollingInterval);
   stickUsb.setWatchMovingBlindsInterval(movingInterval);
@@ -425,10 +424,7 @@ function tryFullRebind() {
 
   log.info('Performing full device rebind');
 
-  // 1. Geräte neu scannen
-  stickUsb.scanDevices({ autoAssignBlinds: false });
-
-  // 2. Availability neu setzen
+  // Availability neu setzen
   for (const snr of Object.keys(devices)) {
     client.publish(`warema/${snr}/availability`, 'online', { retain: true });
   }
