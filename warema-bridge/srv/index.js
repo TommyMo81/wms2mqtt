@@ -499,19 +499,21 @@ function callback(err, msg) {
       if (dev.type === "28") {
          const now = Date.now();
 
-         // Wenn HA kürzlich gesteuert hat → ignorieren (Loop-Schutz)
+         // Loop-Schutz: Wenn HA gerade gesteuert hat → ignorieren
          if (dev.haControlUntil && now < dev.haControlUntil) {
-           return;
+             return;
          }
-
-         // Nur Endzustände von externer Steuerung (Fernbedienung)
-         if (
-           typeof msg.payload.position !== "undefined" &&
-           msg.payload.moving === false
-         ) {
-           const brightness = normalizeWaremaBrightness(msg.payload.position);
-           updateLightState(snr, brightness);
+ 
+         // LED-Helligkeit immer aktualisieren, sobald der Stick eine Änderung meldet
+         if (typeof msg.payload.position !== "undefined") {
+             const brightness = normalizeWaremaBrightness(msg.payload.position);
+ 
+             // Nur aktualisieren, wenn sich der Wert wirklich geändert hat
+             if (devices[snr].position !== brightness) {
+                 updateLightState(snr, brightness);
+             }
          }
+ 
          return;
       } else {
         // Standard Cover-Handling
