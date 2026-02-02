@@ -642,7 +642,7 @@ client.on('connect', function () {
   
   for (const snr of Object.keys(devices)) {
     client.publish(`warema/${snr}/availability`, 'online', { retain: true });
-	restoreLedState(snr);
+	//restoreLedState(snr);
   }
 
   // Wetter-Polling starten
