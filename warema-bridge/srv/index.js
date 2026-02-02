@@ -499,22 +499,20 @@ function callback(err, msg) {
       if (dev.type === "28") {
          const now = Date.now();
 
-         // PATCH: Während HA steuert → alle Stick-Updates ignorieren
-        if (dev.haControlUntil && now < dev.haControlUntil) {
-            return;
-        }
+         // Wenn HA kürzlich gesteuert hat → ignorieren (Loop-Schutz)
+         if (dev.haControlUntil && now < dev.haControlUntil) {
+           return;
+         }
 
-        // PATCH: Externe Steuerung → Position sofort übernehmen
-        if (typeof msg.payload.position !== "undefined") {
-            const brightness = normalizeWaremaBrightness(msg.payload.position);
-
-            // Nur aktualisieren, wenn sich der Wert wirklich geändert hat
-            if (devices[snr].position !== brightness) {
-                updateLightState(snr, brightness);
-            }
-        }
-
-        return;
+         // Nur Endzustände von externer Steuerung (Fernbedienung)
+         if (
+           typeof msg.payload.position !== "undefined" &&
+           msg.payload.moving === false
+         ) {
+           const brightness = normalizeWaremaBrightness(msg.payload.position);
+           updateLightState(snr, brightness);
+         }
+         return;
       } else {
         // Standard Cover-Handling
         if (typeof msg.payload.position !== "undefined") {
@@ -743,7 +741,7 @@ client.on('message', function (topic, message) {
 
       stickUsb.vnBlindSetPosition(snr, target, 0);
 
-      devices[snr].haControlUntil = Date.now() + 10000;
+      devices[snr].haControlUntil = Date.now() + 3000;
 	  
       // nur lokal merken, NICHT als Feedbackschleife
       updateLightState(snr, target);
