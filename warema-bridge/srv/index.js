@@ -396,11 +396,13 @@ function registerDevice(element) {
   if (element.type !== "63") {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
   }
-  devices[element.snr] = { type: element.type, lastBrightness: null };
+  devices[element.snr] = { type: element.type, lastBrightness: 100 };
 
   // Availability online setzen
   if (client && client.connected) {
     client.publish(availability_topic, 'online', { retain: true });
+	// Falls LED nach MQTT-Connect registriert wird
+    restoreLedState(element.snr);
   }
 
   // Discovery publizieren
@@ -548,20 +550,6 @@ function updateLightState(snr, brightness) {
 
   if (!devices[snr]) devices[snr] = {};
   devices[snr].type = "28";
-  
-  // PATCH: Wenn wir den echten Zustand noch nicht kennen → NICHT publishen
-  if (devices[snr].lastBrightness === null) {
-      // Nur speichern, aber nichts an HA senden
-      if (v > 0) {
-          devices[snr].lastBrightness = v;
-          devices[snr].position = v;
-      } else {
-          // OFF wird ebenfalls NICHT publiziert, solange unbekannt
-          devices[snr].position = 0;
-      }
-      return;
-  }
-
   devices[snr].position = v;
 
   // Letzte bekannte Helligkeit nur speichern, wenn >0
@@ -576,6 +564,17 @@ function updateLightState(snr, brightness) {
     // ON/OFF automatisch abhängig von Helligkeit
     client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
   }
+}
+
+function restoreLedState(snr) {
+  const dev = devices[snr];
+  if (!dev || dev.type !== "28") return;
+  if (dev.lastBrightness === undefined) return;
+
+  log.info(`Restoring LED state for ${snr}: ${dev.lastBrightness}%`);
+
+  // Nur MQTT-State setzen, kein Hardware-Befehl!
+  updateLightState(snr, dev.lastBrightness);
 }
 
 
@@ -643,6 +642,7 @@ client.on('connect', function () {
   
   for (const snr of Object.keys(devices)) {
     client.publish(`warema/${snr}/availability`, 'online', { retain: true });
+	restoreLedState(snr);
   }
 
   // Wetter-Polling starten
