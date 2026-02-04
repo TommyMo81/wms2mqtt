@@ -37,6 +37,7 @@ const settingsPar = {
 const devices = {};                 // Map von SNR -> { type, position, tilt, lastBrightness }
 const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const weatherStats = new Map();     // SNR -> { wind, temp, lumen, lastPublish }
+const lastWeatherBroadcast = new Map(); // snr -> timestamp
 
 // Regen-Hysterese
 const rainState = new Map(); // snr -> { state, lastChange }
@@ -210,6 +211,13 @@ function pollWeatherData() {
     }
     const weatherData = stickUsb.getLastWeatherBroadcast();
     if (weatherData && weatherData.snr) {
+
+	  const lastBc = lastWeatherBroadcast.get(weatherData.snr);
+      if (lastBc && (Date.now() - lastBc) < pollingInterval) {
+        // frischer Broadcast vorhanden → Polling ignorieren
+        return;
+      }
+		
       // Gerät registrieren (Sensoren) falls nötig
       if (!devices[weatherData.snr]) {
         registerDevice({ snr: weatherData.snr, type: "63" });
@@ -320,7 +328,9 @@ function registerDevice(element) {
         state_topic: `warema/${element.snr}/rain/state`,
         device_class: 'moisture',
         unique_id: `${element.snr}_rain`,
-        default_entity_id: `sensor.${element.snr}_rain`,
+        default_entity_id: `binary_sensor.${element.snr}_rain`,
+        payload_on: 'ON',
+        payload_off: 'OFF'
       };
       client.publish(`homeassistant/binary_sensor/${element.snr}/rain/config`, JSON.stringify(rain_payload), { retain: true });
 
@@ -416,7 +426,8 @@ function registerDevice(element) {
         payload_off: 'OFF',
         optimistic: true,
         unique_id: `${element.snr}_light`,
-        default_entity_id: `light.${element.snr}`
+        default_entity_id: `light.${element.snr}`,
+		icon: "mdi:toggle-switch"
       };
       topicForDiscovery = `homeassistant/light/${element.snr}/${element.snr}/config`;
       break;
@@ -522,6 +533,7 @@ function callback(err, msg) {
       log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2));
       const stickCmd = msg.payload.stickCmd || '';
       const w = msg.payload.weather;
+	  lastWeatherBroadcast.set(w.snr, Date.now());
 
       if (isDuplicateRawMessage(stickCmd, w.snr)) {
         log.debug('Skipping duplicate raw hardware message for device: ' + w.snr);
@@ -831,6 +843,10 @@ client.on('message', function (topic, message) {
 
       stickUsb.vnBlindSetPosition(snr, target, 0);
 
+	  if (!devices[snr]) {
+        devices[snr] = { type: "28" };
+      }
+	  
       devices[snr].haControlUntil = Date.now() + 3000;
       devices[snr].lastHaTarget = target; // Merke das letzte Ziel für Loop-Schutz
       // nur lokal merken, NICHT als Feedbackschleife
@@ -894,6 +910,14 @@ process.on('uncaughtException', err => {
 // Initialisierung: Wenn der Stick bereits verbunden ist, wird der Callback sofort aufgerufen
 validateEnvVars();
 
+const ENV_DEFAULTS = {
+  MQTT_SERVER: mqttServer,
+  WMS_CHANNEL: settingsPar.wmsChannel,
+  WMS_KEY: settingsPar.wmsKey,
+  WMS_PAN_ID: settingsPar.wmsPanid,
+  WMS_SERIAL_PORT: settingsPar.wmsSerialPort
+};
+
 function validateEnvVars() {
   const requiredVars = [
     'MQTT_SERVER',
@@ -904,7 +928,7 @@ function validateEnvVars() {
   ];
   for (const v of requiredVars) {
     if (!process.env[v]) {
-      log.warn(`Environment variable ${v} is not set. Using default: ${eval(v.toLowerCase())}`);
+      log.warn(`Environment variable ${v} is not set. Using default: ${ENV_DEFAULTS[v]}`);
     }
   }
   if (isNaN(pollingInterval) || pollingInterval <= 0) {
