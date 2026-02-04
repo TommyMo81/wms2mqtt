@@ -406,8 +406,7 @@ function registerDevice(element) {
         payload_off: 'OFF',
         optimistic: true,
         unique_id: `${element.snr}_light`,
-        default_entity_id: `light.${element.snr}`,
-		icon: "mdi:toggle-switch"
+        default_entity_id: `light.${element.snr}`
       };
       topicForDiscovery = `homeassistant/light/${element.snr}/${element.snr}/config`;
       break;
@@ -559,7 +558,7 @@ function callback(err, msg) {
       }
 
       // Alle anderen Typen wie gehabt
-      if (["20", "21","24","25"].includes(dev.type)) {
+      if (["20","21","25"].includes(dev.type)) {
         if (typeof msg.payload.position !== "undefined") {
           devices[snr].position = msg.payload.position;
           client.publish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
@@ -646,7 +645,7 @@ function syncAllDeviceStates() {
   for (const snr of Object.keys(devices)) {
     const dev = devices[snr];
     // Only query covers and LED lights (types: 20, 21, 24, 25, 28, 2A)
-    if (["20","21","24","25","28"].includes(dev.type)) {
+    if (["20","21","25","28"].includes(dev.type)) {
       stickUsb.vnBlindGetPosition(snr, {
         cmdConfirmation: false,
         callbackOnUnchangedPos: true
