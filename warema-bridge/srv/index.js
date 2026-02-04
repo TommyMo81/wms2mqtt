@@ -53,26 +53,6 @@ let ledStateCache = {};
  *   Helpers
  *  ========================= */
 
-function rebindDevices() {
-  log.info('Rebinding devices to WMS stick...');
-
-  if (!stickUsb) {
-    log.error('stickUsb is undefined during rebindDevices');
-    return;
-  }
-  // 1. Erneut scannen (wichtig!)
-  stickUsb.scanDevices({ autoAssignBlinds: false });
-
-  // 2. Availability neu setzen
-  if (client?.connected) {
-    client.publish('warema/bridge/state', 'online', { retain: true });
-
-    for (const snr of Object.keys(devices)) {
-      client.publish(`warema/${snr}/availability`, 'online', { retain: true });
-    }
-  }
-}
-
 // Prüft duplizierte Rohmeldung vom Stick
 function isDuplicateRawMessage(stickCmd, snr) {
   const currentTime = Date.now();
@@ -433,20 +413,6 @@ function registerDevice(element) {
       break;
     }
 
-    case "2A": { // Slat roof
-      model = 'Slat roof';
-      payload = {
-        ...base_payload,
-        device: { ...base_device, model },
-        tilt_status_topic: `warema/${element.snr}/tilt`,
-        tilt_command_topic: `warema/${element.snr}/set_tilt`,
-        position_topic: `warema/${element.snr}/position`,
-        set_position_topic: `warema/${element.snr}/set_position`,
-      };
-      topicForDiscovery = `homeassistant/cover/${element.snr}/${element.snr}/config`;
-      break;
-    }
-
     default:
       log.warn('Unrecognized device type: ' + element.type);
       return;
@@ -593,7 +559,7 @@ function callback(err, msg) {
       }
 
       // Alle anderen Typen wie gehabt
-      if (["20", "21","24","25","2A"].includes(dev.type)) {
+      if (["20", "21","24","25"].includes(dev.type)) {
         if (typeof msg.payload.position !== "undefined") {
           devices[snr].position = msg.payload.position;
           client.publish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
@@ -680,7 +646,7 @@ function syncAllDeviceStates() {
   for (const snr of Object.keys(devices)) {
     const dev = devices[snr];
     // Only query covers and LED lights (types: 20, 21, 24, 25, 28, 2A)
-    if (["20","21","24","25","28","2A"].includes(dev.type)) {
+    if (["20","21","24","25","28"].includes(dev.type)) {
       stickUsb.vnBlindGetPosition(snr, {
         cmdConfirmation: false,
         callbackOnUnchangedPos: true
