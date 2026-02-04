@@ -579,38 +579,30 @@ function callback(err, msg) {
         }
         return;
       }
-      // Typ 20: Lamellendach, invertiere Position für Homeassistant und publiziere nur hier
-      if (dev.type === "20") {
-        if (typeof msg.payload.position !== "undefined") {
-          const haPosition = 100 - msg.payload.position;
-          devices[snr].position = haPosition;
-          client.publish(`warema/${snr}/position`, '' + haPosition, { retain: true });
-          if (msg.payload.moving === false) {
-            if (haPosition === 100) {
-              client.publish(`warema/${snr}/state`, 'open', { retain: true });
-            } else if (haPosition === 0) {
-              client.publish(`warema/${snr}/state`, 'closed', { retain: true });
-            } else {
-              client.publish(`warema/${snr}/state`, 'stopped', { retain: true });
-            }
-          }
-        }
-        if (typeof msg.payload.angle !== "undefined") {
-          devices[snr].tilt = msg.payload.angle;
-          client.publish(`warema/${snr}/tilt`, '' + msg.payload.angle, { retain: true });
-        }
-        return;
-      }
+
       // Alle anderen Typen wie gehabt
-      if (["21","24","25","2A"].includes(dev.type)) {
+      if (["20", "21","24","25","2A"].includes(dev.type)) {
         if (typeof msg.payload.position !== "undefined") {
           devices[snr].position = msg.payload.position;
           client.publish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
           if (msg.payload.moving === false) {
             if (msg.payload.position === 0) {
-              client.publish(`warema/${snr}/state`, 'open', { retain: true });
+			  if (dev.type === "20")
+			  {
+				client.publish(`warema/${snr}/state`, 'closed', { retain: true });
+			  } else
+			  {
+				client.publish(`warema/${snr}/state`, 'open', { retain: true });			
+			  }
+              
             } else if (msg.payload.position === 100) {
-              client.publish(`warema/${snr}/state`, 'closed', { retain: true });
+			  if (dev.type === "20")
+			  {
+				client.publish(`warema/${snr}/state`, 'open', { retain: true });
+			  } else
+		      {
+				client.publish(`warema/${snr}/state`, 'closed', { retain: true });
+			  }
             } else {
               client.publish(`warema/${snr}/state`, 'stopped', { retain: true });
             }
@@ -772,34 +764,19 @@ client.on('message', function (topic, message) {
   switch (command) {
     // ======= Cover / allgemeine Geräte =======
     case 'set':
-      if (dev.type === "20") {
-        switch (message) {
-          case 'CLOSE':
-            // Invertiert: HA CLOSE (100) → physisch 0
-            stickUsb.vnBlindSetPosition(snr, 0, 0);
-            client.publish(`warema/${snr}/state`, 'closing', { retain: false });
-            break;
-          case 'OPEN':
-            // Invertiert: HA OPEN (0) → physisch 100
-            stickUsb.vnBlindSetPosition(snr, 100, 0);
-            client.publish(`warema/${snr}/state`, 'opening', { retain: false });
-            break;
-          case 'STOP':
-            stickUsb.vnBlindStop(snr);
-            break;
-          default:
-            log.warn('Unrecognised set payload: ' + message);
-        }
-        break;
-      }
       switch (message) {
         case 'ON':
         case 'OFF':
           // (Platzhalter) Steckdosen etc.; hier keine LED-Logik
           break;
         case 'CLOSE':
-          stickUsb.vnBlindSetPosition(snr, 100, 0);
-          client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+		  if (dev.type === "20") {
+			stickUsb.vnBlindSetPosition(snr, 0, 0);
+			client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+		  } else {
+			stickUsb.vnBlindSetPosition(snr, 100, 0);
+			client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+		  }
           break;
         case 'CLOSETILT':
           stickUsb.vnBlindSetPosition(snr, 0, 100);
@@ -807,8 +784,13 @@ client.on('message', function (topic, message) {
           break;
         case 'OPEN':
         case 'OPENTILT':
-          stickUsb.vnBlindSetPosition(snr, 0, 0);
-          client.publish(`warema/${snr}/state`, 'opening', { retain: false });
+		  if (dev.type === "20") {
+			stickUsb.vnBlindSetPosition(snr, 100, 0);
+			client.publish(`warema/${snr}/state`, 'opening', { retain: false });
+		  } else {
+			stickUsb.vnBlindSetPosition(snr, 0, 0);
+			client.publish(`warema/${snr}/state`, 'opening', { retain: false });
+		  }
           break;
         case 'STOP':
           stickUsb.vnBlindStop(snr);
@@ -819,14 +801,6 @@ client.on('message', function (topic, message) {
       break;
 
     case 'set_position':
-      if (dev.type === "20") {
-        // Invertiere: HA 0 (offen) → physisch 100, HA 100 (geschlossen) → physisch 0
-        const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
-        const physValue = 100 - haValue;
-        log.debug('Setting Lamellendach ' + snr + ' (Typ 20) auf Homeassistant-Position ' + haValue + ' (physisch: ' + physValue + ')');
-        stickUsb.vnBlindSetPosition(snr, physValue);
-        break;
-      }
       log.debug('Setting ' + snr + ' to ' + message);
       stickUsb.vnBlindSetPosition(snr, parseInt(message, 10));
       break;
@@ -834,11 +808,6 @@ client.on('message', function (topic, message) {
     case 'set_tilt':
       log.debug('Setting ' + snr + ' tilt to ' + message + '°, position ' + (devices[snr] ? devices[snr].position : '?'));
       stickUsb.vnBlindSetPosition(snr, parseInt(devices[snr]?.position ?? 0, 10), parseInt(message, 10));
-      break;
-
-    // ======= LED / Light (Typ 28) =======
-    case 'light.set': // defensiv, falls Broker Subtopic anders zusammensetzt
-      // nichts
       break;
 
     /** =========================
