@@ -711,7 +711,7 @@ client.on('connect', function () {
 
   tryFullRebind();
   // Query and sync all device states after MQTT connect
-  setTimeout(syncAllDeviceStates, 1000);
+  syncAllDeviceStates();
 });
 
 client.on('close', () => {
