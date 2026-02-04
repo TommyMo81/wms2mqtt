@@ -772,6 +772,26 @@ client.on('message', function (topic, message) {
   switch (command) {
     // ======= Cover / allgemeine Geräte =======
     case 'set':
+      if (dev.type === "20") {
+        switch (message) {
+          case 'CLOSE':
+            // Invertiert: HA CLOSE (100) → physisch 0
+            stickUsb.vnBlindSetPosition(snr, 0, 0);
+            client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+            break;
+          case 'OPEN':
+            // Invertiert: HA OPEN (0) → physisch 100
+            stickUsb.vnBlindSetPosition(snr, 100, 0);
+            client.publish(`warema/${snr}/state`, 'opening', { retain: false });
+            break;
+          case 'STOP':
+            stickUsb.vnBlindStop(snr);
+            break;
+          default:
+            log.warn('Unrecognised set payload: ' + message);
+        }
+        break;
+      }
       switch (message) {
         case 'ON':
         case 'OFF':
@@ -799,6 +819,14 @@ client.on('message', function (topic, message) {
       break;
 
     case 'set_position':
+      if (dev.type === "20") {
+        // Invertiere: HA 0 (offen) → physisch 100, HA 100 (geschlossen) → physisch 0
+        const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
+        const physValue = 100 - haValue;
+        log.debug('Setting Lamellendach ' + snr + ' (Typ 20) auf Homeassistant-Position ' + haValue + ' (physisch: ' + physValue + ')');
+        stickUsb.vnBlindSetPosition(snr, physValue);
+        break;
+      }
       log.debug('Setting ' + snr + ' to ' + message);
       stickUsb.vnBlindSetPosition(snr, parseInt(message, 10));
       break;
