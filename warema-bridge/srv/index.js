@@ -45,6 +45,9 @@ const RAIN_OFF_DELAY = parseInt(process.env.RAIN_OFF_DELAY || '30000', 10); // m
 
 const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
 
+// LED State Cache für persistente Speicherung der Helligkeit
+let ledStateCache = {};
+
 /** =========================
  *   Helpers
  *  ========================= */
@@ -891,7 +894,6 @@ process.on('uncaughtException', err => {
   shutdown('uncaughtException');
 });
 
-
 // Initialisierung: Wenn der Stick bereits verbunden ist, wird der Callback sofort aufgerufen
 validateEnvVars();
 
@@ -921,3 +923,27 @@ function validateEnvVars() {
     log.warn('WEATHER_PUBLISH_INTERVAL_MS is invalid or not set, using default 60000');
   }
 }
+
+// Hilfsfunktionen für persistente Speicherung
+function saveLedState() {
+  try {
+    fs.writeFileSync(path.join(__dirname, 'led_state.json'), JSON.stringify(ledStateCache, null, 2));
+  } catch (e) {
+    log.error('Fehler beim Speichern von led_state.json: ' + e.toString());
+  }
+}
+
+function loadLedState() {
+  try {
+    const file = path.join(__dirname, 'led_state.json');
+    if (fs.existsSync(file)) {
+      ledStateCache = JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch (e) {
+    log.error('Fehler beim Laden von led_state.json: ' + e.toString());
+    ledStateCache = {};
+  }
+}
+
+// Lade LED-State beim Start
+loadLedState();
