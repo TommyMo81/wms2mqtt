@@ -37,7 +37,6 @@ const settingsPar = {
 const devices = {};                 // Map von SNR -> { type, position, tilt, lastBrightness }
 const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const weatherStats = new Map();     // SNR -> { wind, temp, lumen, lastPublish }
-const lastWeatherBroadcast = new Map(); // snr -> timestamp
 
 // Regen-Hysterese
 const rainState = new Map(); // snr -> { state, lastChange }
@@ -141,7 +140,7 @@ function updateRainState(snr, isRaining) {
 
   let entry = rainState.get(snr);
   if (!entry) {
-    entry = { state: isRaining, lastChange: now, debounceTimeout: null };
+    entry = { state: isRaining, lastChange: now };
     rainState.set(snr, entry);
     // Initialzustand sofort publizieren
     if (client?.connected) {
@@ -155,24 +154,20 @@ function updateRainState(snr, isRaining) {
   }
 
   if (isRaining !== entry.state) {
-    // Debounce: schedule state change after delay, cancel if state flips back
-    if (entry.debounceTimeout) {
-      clearTimeout(entry.debounceTimeout);
-      entry.debounceTimeout = null;
-    }
     const delay = isRaining ? RAIN_ON_DELAY : RAIN_OFF_DELAY;
-    entry.debounceTimeout = setTimeout(() => {
+
+    if ((now - entry.lastChange) >= delay) {
       entry.state = isRaining;
-      entry.lastChange = Date.now();
-      if (client?.connected) {
+      entry.lastChange = now;
+
+      if (client && client.connected) {
         client.publish(
           `warema/${snr}/rain/state`,
           entry.state ? 'ON' : 'OFF',
           { retain: true }
         );
       }
-      entry.debounceTimeout = null;
-    }, delay);
+    }
   } else {
     // Zustand stabil → Zeitstempel aktualisieren
     entry.lastChange = now;
@@ -185,34 +180,28 @@ function updateRainState(snr, isRaining) {
  *  ========================= */
 function pollWeatherData() {
   try {
-    if (!stickUsb) {
+	if (!stickUsb) {
       log.error('stickUsb is undefined during pollWeatherData');
       return;
     }
+	
     const weatherData = stickUsb.getLastWeatherBroadcast();
     if (weatherData && weatherData.snr) {
-
-	  const lastBc = lastWeatherBroadcast.get(weatherData.snr);
-      if (lastBc && (Date.now() - lastBc) < pollingInterval) {
-        // frischer Broadcast vorhanden → Polling ignorieren
-        return;
-      }
-		
       // Gerät registrieren (Sensoren) falls nötig
       if (!devices[weatherData.snr]) {
         registerDevice({ snr: weatherData.snr, type: "63" });
       }
-
+		
       updateWeatherEMA(weatherData.snr, {
         wind: weatherData.wind,
         temp: weatherData.temp,
         lumen: weatherData.lumen
       });
-
+		
       updateRainState(weatherData.snr, weatherData.rain);
     }
   } catch (error) {
-    log.error('Error polling weather data: ' + (error && error.stack ? error.stack : error.toString()));
+    log.error('Error polling weather data: ' + error.toString());
   }
 }
 
@@ -498,7 +487,6 @@ function callback(err, msg) {
       log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2));
       const stickCmd = msg.payload.stickCmd || '';
       const w = msg.payload.weather;
-	  lastWeatherBroadcast.set(w.snr, Date.now());
 
       if (isDuplicateRawMessage(stickCmd, w.snr)) {
         log.debug('Skipping duplicate raw hardware message for device: ' + w.snr);
@@ -842,13 +830,6 @@ async function shutdown(reason) {
     if (weatherInterval) {
       clearInterval(weatherInterval);
       weatherInterval = null;
-    }
-    // Cancel all rain debounce timeouts
-    for (const entry of rainState.values()) {
-      if (entry.debounceTimeout) {
-        clearTimeout(entry.debounceTimeout);
-        entry.debounceTimeout = null;
-      }
     }
     // MQTT sauber schließen
     if (client) {
