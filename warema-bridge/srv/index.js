@@ -37,6 +37,7 @@ const settingsPar = {
 const devices = {};                 // Map von SNR -> { type, position, tilt, lastBrightness }
 const rawMessageCache = new Map();  // Cache für Hardware-Rohmeldungen Dedup
 const weatherStats = new Map();     // SNR -> { wind, temp, lumen, lastPublish }
+const discoveryCache = new Map();   // topic -> payload
 
 // Regen-Hysterese
 const rainState = new Map(); // snr -> { state, lastChange }
@@ -217,10 +218,14 @@ function registerDevice(element) {
     log.warn('registerDevice called with invalid element:', element);
     return;
   }
-  if (devices[element.snr]) {
-    log.info('Device already registered: ' + element.snr);
-    return;
-  }
+  
+  const isNew = !devices[element.snr];
+
+  devices[element.snr] = {
+    ...devices[element.snr],
+    type: element.type
+  };
+  
   // Defensive: always initialize device state
   devices[element.snr] = { type: element.type };
   log.info('Registering ' + element.snr + ' with type: ' + element.type);
@@ -413,20 +418,24 @@ function registerDevice(element) {
   log.debug('Adding device ' + element.snr + ' (type ' + element.type + ')');
 
   // Für steuerbare Geräte auf den Stick legen
-  if (element.type !== "63") {
+  if (isNew && element.type !== "63") {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
   }
   devices[element.snr] = { type: element.type };
 
   // Availability online setzen
-  if (client && client.connected) {
+  if (client?.connected) {
     client.publish(availability_topic, 'online', { retain: true });
 	// Falls LED nach MQTT-Connect registriert wird
     restoreLedState(element.snr);
   }
 
   // Discovery publizieren
-  client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
+  discoveryCache.set(topicForDiscovery, payload);
+
+  if (client?.connected) {
+    client.publish(topicForDiscovery, JSON.stringify(payload), { retain: true });
+  }
 }
 
 function initStick() {
@@ -439,15 +448,26 @@ function initStick() {
   stickUsb.scanDevices({ autoAssignBlinds: false });
 }
 
-function tryFullRebind() {
-  if (!mqttReady || !stickReady || shuttingDown) return;
+function rebindAfterMqttConnect() {
+  if (!mqttReady || shuttingDown) return;
 
-  log.info('Performing full device rebind');
+  log.info('Rebinding MQTT state (discovery + availability + state)');
 
-  // Availability neu setzen
+  // 1️ Discovery erneut veröffentlichen
+  for (const [topic, payload] of discoveryCache.entries()) {
+    client.publish(topic, JSON.stringify(payload), { retain: true });
+  }
+
+  // 2️ Bridge Availability
+  client.publish('warema/bridge/state', 'online', { retain: true });
+
+  // 3️ Geräte Availability
   for (const snr of Object.keys(devices)) {
     client.publish(`warema/${snr}/availability`, 'online', { retain: true });
   }
+
+  // 4️ States aktiv neu synchronisieren
+  syncAllDeviceStates();
 }
 
 /** =========================
@@ -466,7 +486,10 @@ function callback(err, msg) {
       log.info('Warema stick ready');
       stickReady = true;
       initStick();
-	  tryFullRebind();
+	  
+	  if (mqttReady) {
+	    rebindAfterMqttConnect();
+	  }
       break;
 
     case 'wms-vb-scanned-devices':
@@ -513,7 +536,10 @@ function callback(err, msg) {
       // LED Loop-Schutz: Feedbacks nach HA-Steuerung ignorieren, aber Fernbedienung sofort übernehmen
       if (dev.type === "28") {
         const now = Date.now();
-        const reported = typeof msg.payload.position !== "undefined" ? normalizeWaremaBrightness(msg.payload.position) : undefined;
+        const reported = typeof msg.payload.position !== "undefined" 
+		  ? normalizeWaremaBrightness(msg.payload.position) 
+		  : undefined;
+		  
         // Nach Start: Wenn Licht physikalisch an, setze lastBrightness auf Ist-Wert
         if (typeof msg.payload.position !== "undefined" && msg.payload.moving === false && msg.payload.snr && typeof dev.lastBrightness === "undefined") {
           if (msg.payload.position > 0) {
@@ -523,17 +549,7 @@ function callback(err, msg) {
             log.info(`LED ${snr} nach Start: lastBrightness auf physikalischen Wert ${reported} gesetzt.`);
           }
         }
-        // Wenn HA kürzlich gesteuert hat → Feedback ignorieren, außer Fernbedienung wurde benutzt
-        if (dev.haControlUntil && now < dev.haControlUntil) {
-          const lastTarget = dev.lastHaTarget;
-          if (typeof reported === "number" && typeof lastTarget === "number" && Math.abs(reported - lastTarget) > 2) {
-            log.info(`Loop-Schutz aufgehoben für LED ${snr}: Externe Änderung erkannt (z.B. Fernbedienung)`);
-            dev.haControlUntil = 0;
-          } else {
-            log.debug(`Loop-Schutz aktiv für LED ${snr}: Feedback ignoriert`);
-            return;
-          }
-        }
+
         if (
           typeof msg.payload.position !== "undefined" &&
           msg.payload.moving === false
@@ -591,9 +607,26 @@ function callback(err, msg) {
 
 function updateLightState(snr, brightness) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
+  const now = Date.now();
+  
+  if (!devices[snr]) {
+    devices[snr] = { type: "28" };
+  }
 
-  if (!devices[snr]) devices[snr] = { type: "28" };
-  devices[snr].type = "28";
+  const dev = devices[snr];
+  dev.type = "28";
+
+  // Vereinfachter Loop-Schutz:
+  // Ignoriere identischen Wert innerhalb von 2 Sekunden
+  if (
+    dev.lastPublishedBrightness === v &&
+    (now - (dev.lastPublishTimestamp || 0)) < 2000
+  ) {
+    return;
+  }
+
+  dev.lastPublishedBrightness = v;
+  dev.lastPublishTimestamp = now;
   devices[snr].position = v;
 
   // Letzte bekannte Helligkeit nur speichern, wenn >0
@@ -683,22 +716,13 @@ client.on('connect', function () {
     'warema/+/light/set',
     'warema/+/light/set_brightness'
   ]);
-  
-  client.publish('warema/bridge/state', 'online', { retain: true });
-  
-  for (const snr of Object.keys(devices)) {
-    client.publish(`warema/${snr}/availability`, 'online', { retain: true });
-	restoreLedState(snr);
-  }
+
+  rebindAfterMqttConnect();
 
   // Wetter-Polling starten
   if (!weatherInterval) {
     weatherInterval = setInterval(pollWeatherData, pollingInterval);
   }
-
-  tryFullRebind();
-  // Query and sync all device states after MQTT connect
-  syncAllDeviceStates();
 });
 
 client.on('close', () => {
@@ -799,9 +823,6 @@ client.on('message', function (topic, message) {
         devices[snr] = { type: "28" };
       }
 	  
-      devices[snr].haControlUntil = Date.now() + 3000;
-      devices[snr].lastHaTarget = target; // Merke das letzte Ziel für Loop-Schutz
-      // nur lokal merken, NICHT als Feedbackschleife
       updateLightState(snr, target);
       break;
     }
