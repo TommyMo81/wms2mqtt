@@ -393,7 +393,6 @@ function registerDevice(element) {
         supported_color_modes: ["brightness"],
         payload_on: 'ON',
         payload_off: 'OFF',
-        optimistic: true,
         unique_id: `${element.snr}_light`,
         default_entity_id: `light.${element.snr}`
       };
