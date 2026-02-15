@@ -171,10 +171,7 @@ function updateRainState(snr, isRaining) {
         );
       }
     }
-  } else {
-    // Zustand stabil → Zeitstempel aktualisieren
-    entry.lastChange = now;
-  }
+  } 
 }
 
 
@@ -228,12 +225,10 @@ function registerDevice(element) {
   const isNew = !devices[element.snr];
 
   devices[element.snr] = {
-    ...devices[element.snr],
+    ...(devices[element.snr] || {}),
     type: element.type
   };
   
-  // Defensive: always initialize device state
-  devices[element.snr] = { type: element.type };
   log.info('Registering ' + element.snr + ' with type: ' + element.type);
 
   const availability_topic = 'warema/' + element.snr + '/availability';
