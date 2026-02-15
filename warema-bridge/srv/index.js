@@ -726,7 +726,7 @@ function updateLightState(snr, brightness) {
   if (v > 0) {
     devices[snr].lastBrightness = v;
     ledStateCache[snr] = v;
-    saveLedState();
+    scheduleLedStateSave(snr, v);
   }
 
   if (client && client.connected) {
