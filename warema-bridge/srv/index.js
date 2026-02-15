@@ -9,7 +9,9 @@ const path = require('path');
 let shuttingDown = false;
 let mqttReady = false;
 let stickReady = false;
+let systemReady = false;
 let weatherInterval = null;
+let lastWeatherBroadcast = 0;
 
 /** =========================
  *   ENV / Defaults
@@ -183,6 +185,10 @@ function pollWeatherData() {
   try {
 	if (!stickUsb) {
       log.error('stickUsb is undefined during pollWeatherData');
+      return;
+    }
+	
+	if (Date.now() - lastWeatherBroadcast < (2 * pollingInterval)) {
       return;
     }
 	
@@ -470,6 +476,14 @@ function rebindAfterMqttConnect() {
   syncAllDeviceStates();
 }
 
+function trySystemReady() {
+  if (mqttReady && stickReady && !systemReady) {
+    systemReady = true;
+    log.info('System fully ready (MQTT + Stick). Performing initial rebind.');
+    rebindAfterMqttConnect();
+  }
+}
+
 /** =========================
  *   Stick Callback
  *  ========================= */
@@ -486,10 +500,7 @@ function callback(err, msg) {
       log.info('Warema stick ready');
       stickReady = true;
       initStick();
-	  
-	  if (mqttReady) {
-	    rebindAfterMqttConnect();
-	  }
+	  trySystemReady();
       break;
 
     case 'wms-vb-scanned-devices':
@@ -507,6 +518,7 @@ function callback(err, msg) {
 
     case 'wms-vb-rcv-weather-broadcast': {
       log.silly('Weather broadcast:\n' + JSON.stringify(msg.payload, null, 2));
+	  lastWeatherBroadcast = Date.now();
       const stickCmd = msg.payload.stickCmd || '';
       const w = msg.payload.weather;
 
@@ -535,28 +547,39 @@ function callback(err, msg) {
       log.debug('Position update:\n' + JSON.stringify(msg.payload, null, 2));
       // LED Loop-Schutz: Feedbacks nach HA-Steuerung ignorieren, aber Fernbedienung sofort übernehmen
       if (dev.type === "28") {
-        const now = Date.now();
-        const reported = typeof msg.payload.position !== "undefined" 
-		  ? normalizeWaremaBrightness(msg.payload.position) 
-		  : undefined;
-		  
-        // Nach Start: Wenn Licht physikalisch an, setze lastBrightness auf Ist-Wert
-        if (typeof msg.payload.position !== "undefined" && msg.payload.moving === false && msg.payload.snr && typeof dev.lastBrightness === "undefined") {
-          if (msg.payload.position > 0) {
-            dev.lastBrightness = reported;
-            ledStateCache[snr] = reported;
-            saveLedState();
-            log.info(`LED ${snr} nach Start: lastBrightness auf physikalischen Wert ${reported} gesetzt.`);
-          }
+        if (typeof msg.payload.position === "undefined") {
+          return;
         }
 
-        if (
-          typeof msg.payload.position !== "undefined" &&
-          msg.payload.moving === false
-        ) {
-          const brightness = normalizeWaremaBrightness(msg.payload.position);
-          updateLightState(snr, brightness);
+        const reported = normalizeWaremaBrightness(msg.payload.position);
+        const d = ensureLedDevice(snr);
+        const now = Date.now();
+
+        // Wenn HA gerade steuert:
+        if (d.commandActive) {
+
+          // 1️ Ziel erreicht → Lock lösen
+          if (reported === d.commandTarget) {
+            d.commandActive = false;
+            log.debug(`LED ${snr}: Target ${reported} erreicht.`);
+            updateLightState(snr, reported);
+            return;
+          }
+
+          // 2️ Timeout-Schutz (max 15s)
+          if (now - d.commandStartTime > 15000) {
+            log.warn(`LED ${snr}: Command timeout → Lock released.`);
+            d.commandActive = false;
+            updateLightState(snr, reported);
+            return;
+          }
+
+          // 3️ Während Fahrt: Zwischenwerte ignorieren
+          return;
         }
+
+        // Fernbedienung → sofort live übernehmen
+        updateLightState(snr, reported);
         return;
       }
 
@@ -605,16 +628,20 @@ function callback(err, msg) {
   }
 }
 
+function ensureLedDevice(snr) {
+  if (!devices[snr]) {
+    devices[snr] = { type: "28" };
+  }
+  const dev = devices[snr];
+  dev.type = "28";
+  return dev;
+}
+
 function updateLightState(snr, brightness) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
   const now = Date.now();
   
-  if (!devices[snr]) {
-    devices[snr] = { type: "28" };
-  }
-
-  const dev = devices[snr];
-  dev.type = "28";
+  const dev = ensureLedDevice(snr);
 
   // Vereinfachter Loop-Schutz:
   // Ignoriere identischen Wert innerhalb von 2 Sekunden
@@ -717,7 +744,7 @@ client.on('connect', function () {
     'warema/+/light/set_brightness'
   ]);
 
-  rebindAfterMqttConnect();
+  trySystemReady();
 
   // Wetter-Polling starten
   if (!weatherInterval) {
@@ -727,6 +754,7 @@ client.on('connect', function () {
 
 client.on('close', () => {
   mqttReady = false;
+  systemReady = false;
   log.warn('MQTT disconnected');
 });
 
@@ -807,7 +835,6 @@ client.on('message', function (topic, message) {
 
       if (command === 'light/set') {
         if (message.toUpperCase() === 'ON') {
-          // Nutze persistente lastBrightness, falls vorhanden, sonst 100
           target = dev.lastBrightness ?? ledStateCache[snr] ?? 100;
         } else if (message.toUpperCase() === 'OFF') {
           target = 0;
@@ -819,10 +846,13 @@ client.on('message', function (topic, message) {
 
       stickUsb.vnBlindSetPosition(snr, target, 0);
 
-	  if (!devices[snr]) {
-        devices[snr] = { type: "28" };
-      }
-	  
+      const d = ensureLedDevice(snr);
+
+      // Command-Lock aktivieren
+      d.commandActive = true;
+      d.commandTarget = target;
+      d.commandStartTime = Date.now();
+
       updateLightState(snr, target);
       break;
     }
