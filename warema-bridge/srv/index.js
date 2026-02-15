@@ -23,7 +23,6 @@ const pollingInterval = parseInt(process.env.POLLING_INTERVAL || '30000', 10);
 const movingInterval = parseInt(process.env.MOVING_INTERVAL || '1000', 10);
 
 // Weather EMA Aggregation (für Statistik)
-const WEATHER_EMA_ALPHA = parseFloat(process.env.WEATHER_EMA_ALPHA || '0.2');
 const WEATHER_PUBLISH_INTERVAL_MS = parseInt(process.env.WEATHER_PUBLISH_INTERVAL_MS || '60000', 10);
 
 const settingsPar = {
@@ -45,11 +44,13 @@ const discoveryCache = new Map();   // topic -> payload
 const rainState = new Map(); // snr -> { state, lastChange }
 const RAIN_ON_DELAY  = parseInt(process.env.RAIN_ON_DELAY  || '10000', 10); // ms
 const RAIN_OFF_DELAY = parseInt(process.env.RAIN_OFF_DELAY || '30000', 10); // ms
+const WEATHER_TAU_MS = parseInt(process.env.WEATHER_TAU_MS || '120000', 10); //ms
 
 const WAREMA_LED_STEPS = [100,89,78,67,56,45,34,23,12,1];
 
 // LED State Cache für persistente Speicherung der Helligkeit
 let ledStateCache = {};
+const ledSaveTimers = {};
 
 /** =========================
  *   Helpers
@@ -77,6 +78,12 @@ function isDuplicateRawMessage(stickCmd, snr) {
   return false;
 }
 
+function safePublish(topic, payload, options = {}) {
+  if (client?.connected) {
+    client.publish(topic, payload, options);
+  }
+}
+
 /**
  * Normalize Warema brightness value to nearest supported step.
  * @param {number} v - Raw brightness value
@@ -97,55 +104,99 @@ function normalizeWaremaBrightness(v) {
   return best;
 }
 
-/**
- * Update the exponential moving average (EMA) for weather data.
- * @param {number|null} oldValue - Previous EMA value
- * @param {number} newValue - New measurement
- * @returns {number} Updated EMA value
- */
-function updateEMA(oldValue, newValue) {
-  if (oldValue === undefined || oldValue === null) return Number(newValue);
-  return oldValue + WEATHER_EMA_ALPHA * (Number(newValue) - oldValue);
+function updateEMA(entry, key, newValue) {
+  const now = Date.now();
+
+  if (!entry[key]) {
+    entry[key] = {
+      value: Number(newValue),
+      lastUpdate: now
+    };
+    return;
+  }
+
+  const dt = now - entry[key].lastUpdate;
+  const tau = WEATHER_TAU_MS;
+
+  const alpha = 1 - Math.exp(-dt / tau);
+
+  entry[key].value =
+    entry[key].value + alpha * (Number(newValue) - entry[key].value);
+
+  entry[key].lastUpdate = now;
 }
 
 function updateWeatherEMA(snr, data) {
   const now = Date.now();
+
   let entry = weatherStats.get(snr);
   if (!entry) {
-    entry = { wind: null, temp: null, lumen: null, lastPublish: 0 };
+    entry = {
+      wind: null,
+      temp: null,
+      lumen: null,
+      lastPublish: 0
+    };
     weatherStats.set(snr, entry);
   }
 
-  if (data.wind !== undefined) entry.wind = updateEMA(entry.wind, data.wind);
-  if (data.temp !== undefined) entry.temp = updateEMA(entry.temp, data.temp);
-  if (data.lumen !== undefined) entry.lumen = updateEMA(entry.lumen, data.lumen);
+  if (data.wind !== undefined)
+    updateEMA(entry, 'wind', data.wind);
 
-  if ((now - entry.lastPublish) < WEATHER_PUBLISH_INTERVAL_MS) return;
+  if (data.temp !== undefined)
+    updateEMA(entry, 'temp', data.temp);
+
+  if (data.lumen !== undefined)
+    updateEMA(entry, 'lumen', data.lumen);
+
+  if (entry.lastPublish && (now - entry.lastPublish) < WEATHER_PUBLISH_INTERVAL_MS)
+    return;
 
   if (client?.connected) {
-    if (entry.wind !== null)
-      client.publish(`warema/${snr}/wind/state`, entry.wind.toFixed(1), { retain: true });
-    if (entry.temp !== null)
-      client.publish(`warema/${snr}/temperature/state`, entry.temp.toFixed(1), { retain: true });
-    if (entry.lumen !== null)
-      client.publish(`warema/${snr}/illuminance/state`, Math.round(entry.lumen).toString(), { retain: true });
+    if (entry.wind?.value !== undefined)
+      client.publish(
+        `warema/${snr}/wind/state`,
+        entry.wind.value.toFixed(1),
+        { retain: true }
+      );
+
+    if (entry.temp?.value !== undefined)
+      client.publish(
+        `warema/${snr}/temperature/state`,
+        entry.temp.value.toFixed(1),
+        { retain: true }
+      );
+
+    if (entry.lumen?.value !== undefined)
+      client.publish(
+        `warema/${snr}/illuminance/state`,
+        Math.round(entry.lumen.value).toString(),
+        { retain: true }
+      );
 
     entry.lastPublish = now;
-    log.debug(`Published EMA weather for ${snr}`);
   }
 }
 
+
 /**
  * Regen-Hysterese (binär, zeitentprellt)
+ */
+/**
+ * Stabile Regen-Hysterese mit Pending-State
  */
 function updateRainState(snr, isRaining) {
   const now = Date.now();
 
   let entry = rainState.get(snr);
   if (!entry) {
-    entry = { state: isRaining, lastChange: now };
+    entry = {
+      state: isRaining,
+      pendingState: null,
+      pendingSince: 0
+    };
     rainState.set(snr, entry);
-    // Initialzustand sofort publizieren
+
     if (client?.connected) {
       client.publish(
         `warema/${snr}/rain/state`,
@@ -156,23 +207,37 @@ function updateRainState(snr, isRaining) {
     return;
   }
 
-  if (isRaining !== entry.state) {
-    const delay = isRaining ? RAIN_ON_DELAY : RAIN_OFF_DELAY;
+  // Kein Wechsel nötig
+  if (isRaining === entry.state) {
+    entry.pendingState = null;
+    entry.pendingSince = 0;
+    return;
+  }
 
-    if ((now - entry.lastChange) >= delay) {
-      entry.state = isRaining;
-      entry.lastChange = now;
+  // Wechsel erkannt → Pending starten
+  if (entry.pendingState !== isRaining) {
+    entry.pendingState = isRaining;
+    entry.pendingSince = now;
+    return;
+  }
 
-      if (client && client.connected) {
-        client.publish(
-          `warema/${snr}/rain/state`,
-          entry.state ? 'ON' : 'OFF',
-          { retain: true }
-        );
-      }
+  const delay = isRaining ? RAIN_ON_DELAY : RAIN_OFF_DELAY;
+
+  if (now - entry.pendingSince >= delay) {
+    entry.state = isRaining;
+    entry.pendingState = null;
+    entry.pendingSince = 0;
+
+    if (client?.connected) {
+      client.publish(
+        `warema/${snr}/rain/state`,
+        isRaining ? 'ON' : 'OFF',
+        { retain: true }
+      );
     }
-  } 
+  }
 }
+
 
 
 /** =========================
@@ -269,7 +334,7 @@ function registerDevice(element) {
         unit_of_measurement: 'lx',
         state_class: 'measurement'
       };
-      client.publish(`homeassistant/sensor/${element.snr}/illuminance/config`, JSON.stringify(illuminance_payload), { retain: true });
+      safePublish(`homeassistant/sensor/${element.snr}/illuminance/config`, JSON.stringify(illuminance_payload), { retain: true });
 
       // Temperature
       const temperature_payload = {
@@ -282,7 +347,7 @@ function registerDevice(element) {
         state_class: 'measurement',
         suggested_display_precision: 1
       };
-      client.publish(`homeassistant/sensor/${element.snr}/temperature/config`, JSON.stringify(temperature_payload), { retain: true });
+      safePublish(`homeassistant/sensor/${element.snr}/temperature/config`, JSON.stringify(temperature_payload), { retain: true });
 
       // Wind (aggregiert)
       const wind_payload = {
@@ -295,7 +360,7 @@ function registerDevice(element) {
         state_class: 'measurement',
         suggested_display_precision: 1
       };
-      client.publish(`homeassistant/sensor/${element.snr}/wind/config`, JSON.stringify(wind_payload), { retain: true });
+      safePublish(`homeassistant/sensor/${element.snr}/wind/config`, JSON.stringify(wind_payload), { retain: true });
 
       // Rain
       const rain_payload = {
@@ -307,12 +372,15 @@ function registerDevice(element) {
         payload_on: 'ON',
         payload_off: 'OFF'
       };
-      client.publish(`homeassistant/binary_sensor/${element.snr}/rain/config`, JSON.stringify(rain_payload), { retain: true });
+      safePublish(`homeassistant/binary_sensor/${element.snr}/rain/config`, JSON.stringify(rain_payload), { retain: true });
 
-      if (client && client.connected) {
+      if (client?.connected) {
         client.publish(availability_topic, 'online', { retain: true });
       }
-      devices[element.snr] = { type: element.type }; // Sensorgerät im Cache
+      devices[element.snr] = {
+        ...(devices[element.snr] || {}),
+        type: element.type
+      };
       log.info('No need to add to stick, weather updates are broadcasted. ' + element.snr + ' with type: ' + element.type);
       return;
     }
@@ -422,13 +490,15 @@ function registerDevice(element) {
   if (isNew && element.type !== "63") {
     stickUsb.vnBlindAdd(parseInt(element.snr, 10), element.snr.toString());
   }
-  devices[element.snr] = { type: element.type };
+  
+  devices[element.snr] = {
+    ...(devices[element.snr] || {}),
+    type: element.type
+  };
 
   // Availability online setzen
   if (client?.connected) {
     client.publish(availability_topic, 'online', { retain: true });
-	// Falls LED nach MQTT-Connect registriert wird
-    restoreLedState(element.snr);
   }
 
   // Discovery publizieren
@@ -456,15 +526,15 @@ function rebindAfterMqttConnect() {
 
   // 1️ Discovery erneut veröffentlichen
   for (const [topic, payload] of discoveryCache.entries()) {
-    client.publish(topic, JSON.stringify(payload), { retain: true });
+    safePublish(topic, JSON.stringify(payload), { retain: true });
   }
 
   // 2️ Bridge Availability
-  client.publish('warema/bridge/state', 'online', { retain: true });
+  safePublish('warema/bridge/state', 'online', { retain: true });
 
   // 3️ Geräte Availability
   for (const snr of Object.keys(devices)) {
-    client.publish(`warema/${snr}/availability`, 'online', { retain: true });
+    safePublish(`warema/${snr}/availability`, 'online', { retain: true });
   }
 
   // 4️ States aktiv neu synchronisieren
@@ -542,73 +612,61 @@ function callback(err, msg) {
       log.debug('Position update:\n' + JSON.stringify(msg.payload, null, 2));
       // LED Loop-Schutz: Feedbacks nach HA-Steuerung ignorieren, aber Fernbedienung sofort übernehmen
       if (dev.type === "28") {
-        if (typeof msg.payload.position === "undefined") {
-          return;
-        }
+        if (typeof msg.payload.position === "undefined") return;
 
         const reported = normalizeWaremaBrightness(msg.payload.position);
         const d = ensureLedDevice(snr);
         const now = Date.now();
 
-        // Wenn HA gerade steuert:
         if (d.commandActive) {
 
-          // 1️ Ziel erreicht → Lock lösen
-          if (reported === d.commandTarget) {
+          // Ziel erreicht (±2 Toleranz)
+          if (Math.abs(reported - d.commandTarget) <= 2) {
             d.commandActive = false;
-            log.debug(`LED ${snr}: Target ${reported} erreicht.`);
-            updateLightState(snr, reported);
-            return;
           }
 
-          // 2️ Timeout-Schutz (max 15s)
-          if (now - d.commandStartTime > 15000) {
-            log.warn(`LED ${snr}: Command timeout → Lock released.`);
+          // Timeout 5 Sekunden
+          if (now - d.commandStartTime > 5000) {
             d.commandActive = false;
-            updateLightState(snr, reported);
-            return;
           }
-
-          // 3️ Während Fahrt: Zwischenwerte ignorieren
-          return;
         }
 
-        // Fernbedienung → sofort live übernehmen
-        updateLightState(snr, reported);
+        updateLightStateFromHardware(snr, reported);
         return;
       }
+
 
       // Alle anderen Typen wie gehabt
       if (["20","21","25"].includes(dev.type)) {
         if (typeof msg.payload.position !== "undefined") {
           devices[snr].position = msg.payload.position;
-          client.publish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
+          safePublish(`warema/${snr}/position`, '' + msg.payload.position, { retain: true });
           if (msg.payload.moving === false) {
             if (msg.payload.position === 0) {
 			  if (dev.type === "20")
 			  {
-				client.publish(`warema/${snr}/state`, 'closed', { retain: true });
+				safePublish(`warema/${snr}/state`, 'closed', { retain: true });
 			  } else
 			  {
-				client.publish(`warema/${snr}/state`, 'open', { retain: true });			
+				safePublish(`warema/${snr}/state`, 'open', { retain: true });			
 			  }
               
             } else if (msg.payload.position === 100) {
 			  if (dev.type === "20")
 			  {
-				client.publish(`warema/${snr}/state`, 'open', { retain: true });
+				safePublish(`warema/${snr}/state`, 'open', { retain: true });
 			  } else
 		      {
-				client.publish(`warema/${snr}/state`, 'closed', { retain: true });
+				safePublish(`warema/${snr}/state`, 'closed', { retain: true });
 			  }
             } else {
-              client.publish(`warema/${snr}/state`, 'stopped', { retain: true });
+              safePublish(`warema/${snr}/state`, 'stopped', { retain: true });
             }
           }
         }
         if (typeof msg.payload.angle !== "undefined") {
           devices[snr].tilt = msg.payload.angle;
-          client.publish(`warema/${snr}/tilt`, '' + msg.payload.angle, { retain: true });
+          safePublish(`warema/${snr}/tilt`, '' + msg.payload.angle, { retain: true });
         }
       }
       break;
@@ -618,7 +676,7 @@ function callback(err, msg) {
       log.warn('UNKNOWN MESSAGE: ' + JSON.stringify(msg, null, 2));
   }
 
-  if (client && client.connected) {
+  if (client?.connected) {
     client.publish('warema/bridge/state', 'online', { retain: true });
   }
 }
@@ -628,65 +686,50 @@ function ensureLedDevice(snr) {
     devices[snr] = { type: "28" };
   }
   const dev = devices[snr];
+  
   dev.type = "28";
+  dev.physicalBrightness ??= 0;
+  dev.lastBrightnessMemory ??= ledStateCache[snr] ?? 100;
+  
   return dev;
 }
 
-function updateLightState(snr, brightness) {
+function updateLightStateFromHardware(snr, brightness) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
-  const now = Date.now();
-  
   const dev = ensureLedDevice(snr);
 
-  // Vereinfachter Loop-Schutz:
-  // Ignoriere identischen Wert innerhalb von 2 Sekunden
-  if (
-    dev.lastPublishedBrightness === v &&
-    (now - (dev.lastPublishTimestamp || 0)) < 2000
-  ) {
-    return;
-  }
+  dev.physicalBrightness = v;
 
-  dev.lastPublishedBrightness = v;
-  dev.lastPublishTimestamp = now;
-  devices[snr].position = v;
-
-  // Letzte bekannte Helligkeit nur speichern, wenn >0
+  // Nur Memory aktualisieren wenn > 0
   if (v > 0) {
-    devices[snr].lastBrightness = v;
-    ledStateCache[snr] = v;
-    saveLedState();
+    dev.lastBrightnessMemory = v;
+    scheduleLedStateSave(snr, v);
   }
 
-  if (client && client.connected) {
-    // Helligkeit publizieren
+  if (client?.connected) {
     client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
-
-    // ON/OFF automatisch abhängig von Helligkeit
     client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
   }
 }
 
-function restoreLedState(snr) {
-  const dev = devices[snr];
-  if (!dev || dev.type !== "28") return;
-  // Lade aus Datei, falls vorhanden
-  if (ledStateCache[snr] !== undefined) {
-    dev.lastBrightness = ledStateCache[snr];
+function scheduleLedStateSave(snr, value) {
+  ledStateCache[snr] = value;
+
+  if (ledSaveTimers[snr]) {
+    clearTimeout(ledSaveTimers[snr]);
   }
-  if (dev.lastBrightness === undefined) return;
 
-  log.info(`Restoring LED state for ${snr}: ${dev.lastBrightness}%`);
-
-  // Nur MQTT-State setzen, kein Hardware-Befehl!
-  updateLightState(snr, dev.lastBrightness);
+  ledSaveTimers[snr] = setTimeout(() => {
+    saveLedState();
+    delete ledSaveTimers[snr];
+  }, 2000); // 2 Sekunden Debounce
 }
 
 function syncAllDeviceStates() {
   // Query all registered covers and LED devices for their current state
   for (const snr of Object.keys(devices)) {
     const dev = devices[snr];
-    // Only query covers and LED lights (types: 20, 21, 24, 25, 28, 2A)
+    // Only query covers and LED lights (types: 20, 21, 25, 28, 2A)
     if (["20","21","25","28"].includes(dev.type)) {
       stickUsb.vnBlindGetPosition(snr, {
         cmdConfirmation: false,
@@ -750,6 +793,12 @@ client.on('connect', function () {
 client.on('close', () => {
   mqttReady = false;
   systemReady = false;
+  
+  if (weatherInterval) {
+    clearInterval(weatherInterval);
+    weatherInterval = null;
+  }
+  
   log.warn('MQTT disconnected');
 });
 
@@ -783,24 +832,24 @@ client.on('message', function (topic, message) {
         case 'CLOSE':
 		  if (dev.type === "20") {
 			stickUsb.vnBlindSetPosition(snr, 0, 0);
-			client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+			safePublish(`warema/${snr}/state`, 'closing', { retain: false });
 		  } else {
 			stickUsb.vnBlindSetPosition(snr, 100, 0);
-			client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+			safePublish(`warema/${snr}/state`, 'closing', { retain: false });
 		  }
           break;
         case 'CLOSETILT':
           stickUsb.vnBlindSetPosition(snr, 0, 100);
-          client.publish(`warema/${snr}/state`, 'closing', { retain: false });
+          safePublish(`warema/${snr}/state`, 'closing', { retain: false });
           break;
         case 'OPEN':
         case 'OPENTILT':
 		  if (dev.type === "20") {
 			stickUsb.vnBlindSetPosition(snr, 100, 0);
-			client.publish(`warema/${snr}/state`, 'opening', { retain: false });
+			safePublish(`warema/${snr}/state`, 'opening', { retain: false });
 		  } else {
 			stickUsb.vnBlindSetPosition(snr, 0, 0);
-			client.publish(`warema/${snr}/state`, 'opening', { retain: false });
+			safePublish(`warema/${snr}/state`, 'opening', { retain: false });
 		  }
           break;
         case 'STOP':
@@ -817,8 +866,16 @@ client.on('message', function (topic, message) {
       break;
 
     case 'set_tilt':
-      log.debug('Setting ' + snr + ' tilt to ' + message + '°, position ' + (devices[snr] ? devices[snr].position : '?'));
-      stickUsb.vnBlindSetPosition(snr, parseInt(devices[snr]?.position ?? 0, 10), parseInt(message, 10));
+      const tilt = parseInt(message, 10);
+      if (!Number.isFinite(tilt)) {
+        log.warn('Invalid tilt value: ' + message);
+        return;
+      }
+
+      const pos = parseInt(devices[snr]?.position ?? 0, 10);
+
+      log.debug('Setting ' + snr + ' tilt to ' + message + '°, position ' + pos);
+      stickUsb.vnBlindSetPosition(snr, pos, tilt);
       break;
 
     /** =========================
@@ -826,11 +883,13 @@ client.on('message', function (topic, message) {
      *  ========================= */
     case 'light/set':
     case 'light/set_brightness': {
+
+      const d = ensureLedDevice(snr);
       let target = 0;
 
       if (command === 'light/set') {
         if (message.toUpperCase() === 'ON') {
-          target = dev.lastBrightness ?? ledStateCache[snr] ?? 100;
+          target = d.lastBrightnessMemory ?? 100;
         } else if (message.toUpperCase() === 'OFF') {
           target = 0;
         }
@@ -841,14 +900,13 @@ client.on('message', function (topic, message) {
 
       stickUsb.vnBlindSetPosition(snr, target, 0);
 
-      const d = ensureLedDevice(snr);
-
-      // Command-Lock aktivieren
       d.commandActive = true;
       d.commandTarget = target;
       d.commandStartTime = Date.now();
 
-      updateLightState(snr, target);
+      // KEIN sofortiges updateLightState hier!
+      // Wir warten auf Hardware-Feedback
+
       break;
     }
 
@@ -928,8 +986,8 @@ function validateEnvVars() {
   if (isNaN(movingInterval) || movingInterval <= 0) {
     log.warn('MOVING_INTERVAL is invalid or not set, using default 1000');
   }
-  if (isNaN(WEATHER_EMA_ALPHA) || WEATHER_EMA_ALPHA <= 0 || WEATHER_EMA_ALPHA > 1) {
-    log.warn('WEATHER_EMA_ALPHA is invalid or not set, using default 0.2');
+  if (isNaN(WEATHER_TAU_MS ) || WEATHER_TAU_MS  <= 0) {
+    log.warn('WEATHER_TAU_MS  is invalid or not set, using default 120000');
   }
   if (isNaN(WEATHER_PUBLISH_INTERVAL_MS) || WEATHER_PUBLISH_INTERVAL_MS <= 0) {
     log.warn('WEATHER_PUBLISH_INTERVAL_MS is invalid or not set, using default 60000');
@@ -939,7 +997,13 @@ function validateEnvVars() {
 // Hilfsfunktionen für persistente Speicherung
 function saveLedState() {
   try {
-    fs.writeFileSync(path.join(__dirname, 'led_state.json'), JSON.stringify(ledStateCache, null, 2));
+    fs.writeFile(
+      path.join(__dirname, 'led_state.json'),
+      JSON.stringify(ledStateCache, null, 2),
+      err => {
+        if (err) log.error('Fehler beim Speichern: ' + err.toString());
+      }
+    );
   } catch (e) {
     log.error('Fehler beim Speichern von led_state.json: ' + e.toString());
   }
