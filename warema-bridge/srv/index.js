@@ -616,25 +616,38 @@ function callback(err, msg) {
 
         const reported = normalizeWaremaBrightness(msg.payload.position);
         const d = ensureLedDevice(snr);
+
         const now = Date.now();
 
-        if (d.commandActive) {
+        d.physicalBrightness = reported;
 
-          // Ziel erreicht (±2 Toleranz)
-          if (Math.abs(reported - d.commandTarget) <= 2) {
-            d.commandActive = false;
-          }
-
-          // Timeout 5 Sekunden
-          if (now - d.commandStartTime > 5000) {
-            d.commandActive = false;
-          }
+        // Memory nur aktualisieren wenn:
+        // - Helligkeit > 0
+        // - NICHT gerade OFF-Dimmung läuft
+        if (reported > 0 && !d.commandIsOff) {
+          d.lastBrightnessMemory = reported;
+          scheduleLedStateSave(snr, reported);
         }
 
-        updateLightStateFromHardware(snr, reported);
+        // Command beendet wenn Ziel erreicht
+        if (d.commandActive && reported === d.commandTarget) {
+          d.commandActive = false;
+          d.commandIsOff = false;
+        }
+
+        // Failsafe Timeout 10 Sekunden
+        if (d.commandActive && (now - d.commandStartTime > 10000)) {
+          d.commandActive = false;
+          d.commandIsOff = false;
+        }
+
+        if (client?.connected) {
+          client.publish(`warema/${snr}/light/brightness`, String(reported), { retain: true });
+          client.publish(`warema/${snr}/light/state`, reported > 0 ? 'ON' : 'OFF', { retain: true });
+        }
+
         return;
       }
-
 
       // Alle anderen Typen wie gehabt
       if (["20","21","25"].includes(dev.type)) {
@@ -685,14 +698,21 @@ function ensureLedDevice(snr) {
   if (!devices[snr]) {
     devices[snr] = { type: "28" };
   }
+
   const dev = devices[snr];
-  
+
   dev.type = "28";
   dev.physicalBrightness ??= 0;
   dev.lastBrightnessMemory ??= ledStateCache[snr] ?? 100;
-  
+
+  dev.commandActive ??= false;
+  dev.commandTarget ??= null;
+  dev.commandStartTime ??= 0;
+  dev.commandIsOff ??= false;
+
   return dev;
 }
+
 
 function updateLightStateFromHardware(snr, brightness) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
@@ -700,7 +720,7 @@ function updateLightStateFromHardware(snr, brightness) {
 
   dev.physicalBrightness = v;
 
-  // Nur Memory aktualisieren wenn > 0
+  // Nur Memory aktualisieren, wenn physisch > 0
   if (v > 0) {
     dev.lastBrightnessMemory = v;
     scheduleLedStateSave(snr, v);
@@ -888,14 +908,27 @@ client.on('message', function (topic, message) {
       let target = 0;
 
       if (command === 'light/set') {
+
         if (message.toUpperCase() === 'ON') {
-          target = d.lastBrightnessMemory ?? 100;
+          target = d.lastBrightnessMemory > 0
+            ? d.lastBrightnessMemory
+            : 100;
+
+          d.commandIsOff = false;
+
         } else if (message.toUpperCase() === 'OFF') {
           target = 0;
+          d.commandIsOff = true;
         }
+
       } else {
+
         const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
+
+        if (!Number.isFinite(haValue)) return;
+
         target = normalizeWaremaBrightness(haValue);
+        d.commandIsOff = (target === 0);
       }
 
       stickUsb.vnBlindSetPosition(snr, target, 0);
@@ -903,9 +936,6 @@ client.on('message', function (topic, message) {
       d.commandActive = true;
       d.commandTarget = target;
       d.commandStartTime = Date.now();
-
-      // KEIN sofortiges updateLightState hier!
-      // Wir warten auf Hardware-Feedback
 
       break;
     }
