@@ -612,68 +612,39 @@ function callback(err, msg) {
       log.debug('Position update:\n' + JSON.stringify(msg.payload, null, 2));
       // LED Loop-Schutz: Feedbacks nach HA-Steuerung ignorieren, aber Fernbedienung sofort übernehmen
       if (dev.type === "28") {
-
-        if (typeof msg.payload.position === "undefined") return;
-
-        const reported = normalizeWaremaBrightness(msg.payload.position);
-        const d = ensureLedDevice(snr);
-
-        const now = Date.now();
-
-        d.physicalBrightness = reported;
-
-        // -------------------------
-        // HA-Command läuft
-        // -------------------------
-        if (d.commandActive && d.commandSource === "ha") {
-
-          // Ziel erreicht → EINMAL publishen
-          if (reported === d.commandTarget) {
-
-            d.commandActive = false;
-            d.commandSource = null;
-
-            if (reported > 0) {
-              d.lastBrightnessMemory = reported;
-              scheduleLedStateSave(snr, reported);
-            }
-
-            if (client?.connected) {
-              client.publish(`warema/${snr}/light/brightness`, String(reported), { retain: true });
-              client.publish(`warema/${snr}/light/state`, reported > 0 ? 'ON' : 'OFF', { retain: true });
-            }
-          }
-
-          // Timeout-Failsafe (8s)
-          else if (now - d.commandStartTime > 8000) {
-
-            d.commandActive = false;
-            d.commandSource = null;
-
-            if (client?.connected) {
-              client.publish(`warema/${snr}/light/brightness`, String(reported), { retain: true });
-              client.publish(`warema/${snr}/light/state`, reported > 0 ? 'ON' : 'OFF', { retain: true });
-            }
-          }
-
-          // Zwischenwerte NICHT publishen
+        if (typeof msg.payload.position === "undefined") {
           return;
         }
 
-        // -------------------------
-        // Remote oder normaler Status
-        // -------------------------
+        const reported = normalizeWaremaBrightness(msg.payload.position);
+        const d = ensureLedDevice(snr);
+        const now = Date.now();
 
-        if (reported > 0) {
-          d.lastBrightnessMemory = reported;
-          scheduleLedStateSave(snr, reported);
+        // Wenn HA gerade steuert:
+        if (d.commandActive) {
+
+          // 1️ Ziel erreicht → Lock lösen
+          if (reported === d.commandTarget) {
+            d.commandActive = false;
+            log.debug(`LED ${snr}: Target ${reported} erreicht.`);
+            updateLightState(snr, reported);
+            return;
+          }
+
+          // 2️ Timeout-Schutz (max 15s)
+          if (now - d.commandStartTime > 15000) {
+            log.warn(`LED ${snr}: Command timeout → Lock released.`);
+            d.commandActive = false;
+            updateLightState(snr, reported);
+            return;
+          }
+
+          // 3️ Während Fahrt: Zwischenwerte ignorieren
+          return;
         }
 
-        if (client?.connected) {
-          client.publish(`warema/${snr}/light/brightness`, String(reported), { retain: true });
-          client.publish(`warema/${snr}/light/state`, reported > 0 ? 'ON' : 'OFF', { retain: true });
-        }
-
+        // Fernbedienung → sofort live übernehmen
+        updateLightState(snr, reported);
         return;
       }
 
@@ -727,36 +698,42 @@ function ensureLedDevice(snr) {
   if (!devices[snr]) {
     devices[snr] = { type: "28" };
   }
-
   const dev = devices[snr];
-
   dev.type = "28";
-  dev.physicalBrightness ??= 0;
-  dev.lastBrightnessMemory ??= ledStateCache[snr] ?? 100;
-
-  dev.commandActive ??= false;
-  dev.commandTarget ??= null;
-  dev.commandStartTime ??= 0;
-  dev.commandSource ??= null; // "ha" oder "remote"
-
   return dev;
 }
 
-
-function updateLightStateFromHardware(snr, brightness) {
+function updateLightState(snr, brightness) {
   const v = Math.max(0, Math.min(100, Number(brightness)));
+  const now = Date.now();
+  
   const dev = ensureLedDevice(snr);
 
-  dev.physicalBrightness = v;
-
-  // Nur Memory aktualisieren, wenn physisch > 0
-  if (v > 0) {
-    dev.lastBrightnessMemory = v;
-    scheduleLedStateSave(snr, v);
+  // Vereinfachter Loop-Schutz:
+  // Ignoriere identischen Wert innerhalb von 2 Sekunden
+  if (
+    dev.lastPublishedBrightness === v &&
+    (now - (dev.lastPublishTimestamp || 0)) < 2000
+  ) {
+    return;
   }
 
-  if (client?.connected) {
+  dev.lastPublishedBrightness = v;
+  dev.lastPublishTimestamp = now;
+  devices[snr].position = v;
+
+  // Letzte bekannte Helligkeit nur speichern, wenn >0
+  if (v > 0) {
+    devices[snr].lastBrightness = v;
+    ledStateCache[snr] = v;
+    saveLedState();
+  }
+
+  if (client && client.connected) {
+    // Helligkeit publizieren
     client.publish(`warema/${snr}/light/brightness`, String(v), { retain: true });
+
+    // ON/OFF automatisch abhängig von Helligkeit
     client.publish(`warema/${snr}/light/state`, v > 0 ? 'ON' : 'OFF', { retain: true });
   }
 }
@@ -932,35 +909,29 @@ client.on('message', function (topic, message) {
      *  ========================= */
     case 'light/set':
     case 'light/set_brightness': {
-
-      const d = ensureLedDevice(snr);
       let target = 0;
 
       if (command === 'light/set') {
-
         if (message.toUpperCase() === 'ON') {
-          target = d.lastBrightnessMemory > 0 ? d.lastBrightnessMemory : 100;
+          target = dev.lastBrightness ?? ledStateCache[snr] ?? 100;
         } else if (message.toUpperCase() === 'OFF') {
           target = 0;
         }
-
       } else {
-
-        const haValue = parseInt(message, 10);
-        if (!Number.isFinite(haValue)) return;
-
-        target = normalizeWaremaBrightness(
-          Math.max(0, Math.min(100, haValue))
-        );
+        const haValue = Math.max(0, Math.min(100, parseInt(message, 10)));
+        target = normalizeWaremaBrightness(haValue);
       }
 
       stickUsb.vnBlindSetPosition(snr, target, 0);
 
+      const d = ensureLedDevice(snr);
+
+      // Command-Lock aktivieren
       d.commandActive = true;
       d.commandTarget = target;
       d.commandStartTime = Date.now();
-      d.commandSource = "ha";
 
+      updateLightState(snr, target);
       break;
     }
 
