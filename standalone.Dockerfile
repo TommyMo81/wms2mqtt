@@ -20,7 +20,7 @@ COPY warema-bridge/srv ./srv
 # =========================
 # Stage 2: Runtime (HA Base Image)
 # =========================
-FROM ghcr.io/hassio-addons/base:17.2.5
+FROM ghcr.io/hassio-addons/base:19.0.0
 
 RUN apk add --no-cache nodejs npm
 
