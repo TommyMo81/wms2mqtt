@@ -5,12 +5,12 @@
     "build": "docker buildx build --tag tommymo81/wms2mqtt:latest --platform linux/amd64,linux/arm64,linux/arm/v7 -f standalone.Dockerfile ."
   },
   "dependencies": {
-    "@serialport/parser-delimiter": "^12.0.0",
-    "mqtt": "^4.2.6",
-    "serialport": "^12.0.0",
-    "winston": "^3.8.2"
+    "@serialport/parser-delimiter": "^13.0.0",
+    "mqtt": "^5.15.0",
+    "serialport": "^13.0.0",
+    "winston": "^3.19.0"
   },
   "devDependencies": {
-    "jest": "^29.3.1"
+    "jest": "^30.2.0"
   }
 }
