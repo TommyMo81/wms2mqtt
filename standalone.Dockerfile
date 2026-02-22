@@ -1,7 +1,7 @@
 # =========================
 # Stage 1: Builder
 # =========================
-FROM node:24-alpine as builder
+FROM node:22-alpine as builder
 
 WORKDIR /app
 
