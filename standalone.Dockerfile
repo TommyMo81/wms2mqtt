@@ -1,35 +1,59 @@
 # =========================
 # Stage 1: Builder
 # =========================
-FROM node:22-alpine as builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-## Install build toolchain, install node deps and compile native add-ons
-RUN apk add --no-cache python3 make g++ linux-headers
+# Build Toolchain für native Module
+RUN apk add --no-cache --virtual .build-deps \
+    python3 \
+    make \
+    g++ \
+    linux-headers
 
-COPY package-lock.json ./
-COPY package.json ./
+# Package Files zuerst (Caching!)
+COPY package.json package-lock.json ./
 
-# rebuild from sources to avoid issues with prebuilt binaries (https://github.com/serialport/node-serialport/issues/2438
-RUN npm ci --omit=dev && npm rebuild --build-from-source
+# Production Install + native rebuild
+RUN npm ci --omit=dev \
+    && npm rebuild --build-from-source
 
-# Copy root filesystem
+# App Code kopieren
 COPY warema-bridge/srv ./srv
 
+
 # =========================
-# Stage 2: Runtime (HA Base Image)
+# Stage 2: Node Runtime Layer
+# =========================
+# Wir extrahieren nur Node aus node:22-alpine
+FROM node:22-alpine AS node_runtime
+
+
+# =========================
+# Stage 3: Final HA Runtime
 # =========================
 FROM ghcr.io/hassio-addons/base:18.2.1
 
-RUN apk add --no-cache nodejs npm
-
 WORKDIR /app
 
-## Copy built node modules and binaries without including the toolchain
+# Node Binary + npm aus offiziellem Node Image übernehmen
+COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node_runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node_runtime /usr/local/bin/npm /usr/local/bin/npm
+COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
+
+# Symlink für npm
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+
+# App + Modules kopieren
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/srv ./srv
 
+# s6 Service Scripts bleiben erhalten
 COPY warema-bridge/etc/services.d/warema-bridge /etc/services.d/warema-bridge
+
 RUN chmod +x /etc/services.d/warema-bridge/run \
     && chmod +x /etc/services.d/warema-bridge/finish
+
+ENV NODE_ENV=production
