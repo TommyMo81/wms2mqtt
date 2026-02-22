@@ -1,7 +1,7 @@
 # =========================
 # Stage 1: Builder
 # =========================
-FROM ghcr.io/hassio-addons/base-nodejs:18.2.1 AS builder
+FROM ghcr.io/hassio-addons/base-nodejs:0.2.5 AS builder
 
 WORKDIR /app
 
@@ -25,7 +25,7 @@ COPY warema-bridge/srv ./srv
 # =========================
 # Stage 2: Runtime
 # =========================
-FROM ghcr.io/hassio-addons/base-nodejs:18.2.1
+FROM ghcr.io/hassio-addons/base-nodejs:0.2.5
 
 WORKDIR /app
 
