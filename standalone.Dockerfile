@@ -1,42 +1,35 @@
 # =========================
 # Stage 1: Builder
 # =========================
-FROM ghcr.io/hassio-addons/base-nodejs:0.2.5 AS builder
+FROM node:22-alpine as builder
 
 WORKDIR /app
 
-# Nur Build-Dependencies (werden nicht ins finale Image übernommen)
-RUN apk add --no-cache --virtual .build-deps \
-    python3 \
-    make \
-    g++ \
-    linux-headers
+## Install build toolchain, install node deps and compile native add-ons
+RUN apk add --no-cache python3 make g++ linux-headers
 
-# Nur Package-Files zuerst (besseres Layer-Caching)
-COPY package.json package-lock.json ./
+COPY package-lock.json ./
+COPY package.json ./
 
-# Saubere Installation (production only)
-RUN npm ci --omit=dev \
-    && npm rebuild --build-from-source
+# rebuild from sources to avoid issues with prebuilt binaries (https://github.com/serialport/node-serialport/issues/2438
+RUN npm ci --omit=dev && npm rebuild --build-from-source
 
-# App-Code kopieren
+# Copy root filesystem
 COPY warema-bridge/srv ./srv
 
 # =========================
-# Stage 2: Runtime
+# Stage 2: Runtime (HA Base Image)
 # =========================
-FROM ghcr.io/hassio-addons/base-nodejs:0.2.5
+FROM ghcr.io/hassio-addons/base:18.2.1
+
+RUN apk add --no-cache nodejs npm
 
 WORKDIR /app
 
-# Nur das Nötigste kopieren
+## Copy built node modules and binaries without including the toolchain
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/srv ./srv
 
-# s6 Service
 COPY warema-bridge/etc/services.d/warema-bridge /etc/services.d/warema-bridge
-
 RUN chmod +x /etc/services.d/warema-bridge/run \
     && chmod +x /etc/services.d/warema-bridge/finish
-
-ENV NODE_ENV=production
