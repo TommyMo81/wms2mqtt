@@ -1,7 +1,7 @@
 # =========================
 # Stage 1: Builder
 # =========================
-FROM node:22-alpine as builder
+FROM node:24-alpine as builder
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ COPY warema-bridge/srv ./srv
 # =========================
 # Stage 2: Runtime (HA Base Image)
 # =========================
-FROM ghcr.io/hassio-addons/base:14.0.2
+FROM ghcr.io/hassio-addons/base:20.0.0
 
 RUN apk add --no-cache nodejs npm
 
